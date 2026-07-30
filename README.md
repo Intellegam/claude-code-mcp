@@ -109,6 +109,13 @@ claude-cancel({ sessionId: "e0dbaa09-…" })
 Sends an interrupt if a turn is in flight; otherwise returns the current state
 unchanged. Safe to call at any time, including before the turn is fully up.
 
+### Failures
+
+A tool call that fails answers with a normal result marked `isError`, carrying
+the message as text — the calling model reads the failure instead of losing it.
+JSON-RPC error codes are reserved for requests the server could not act on at
+all: `-32602` for an unknown tool, `-32601`/`-32600`/`-32700` for bad envelopes.
+
 ## Async mode
 
 Use `async: true` when you have other work to do while Claude thinks. If you
@@ -141,15 +148,24 @@ memory files, hooks, skills, plugins and MCP servers. The trade is a wider tool
 surface than a sealed sandbox, and the startup cost of your MCP servers on every
 turn — in exchange the consultation has the context and tooling you do.
 
-Read-only is the default: no `Write`, `Edit`, `NotebookEdit`, `Bash`, `Monitor`
-or `REPL`. Delegation, scheduling, worktree switching and messaging tools
-(`Task`/`Agent`, `Workflow`, `Cron*`, `ScheduleWakeup`, `RemoteTrigger`,
-`SendMessage`, `SendFeedback`, `PushNotification`, `Enter/ExitWorktree`) are
-blocked in **both** modes. `writable: true` adds the file and shell tools and
-runs without permission prompts — scope it explicitly in the prompt.
+Read-only is the default: no `Write`, `Edit`, `NotebookEdit`, `Bash`, `Monitor`,
+`REPL` or `TaskCreate`/`TaskUpdate`/`TaskStop`, and inline `!` shell commands in
+skills are disabled too. Delegation, scheduling, worktree switching, messaging,
+publishing and interactive tools (`Task`/`Agent`, `Workflow`, `Cron*`,
+`ScheduleWakeup`, `RemoteTrigger`, `SendMessage`, `SendFeedback`,
+`PushNotification`, `Enter/ExitWorktree`, `DesignSync`, `Projects`, `Artifact`,
+`AskUserQuestion`, `Enter/ExitPlanMode`) are blocked in **both** modes.
+`writable: true` adds the file and shell tools and runs without permission
+prompts — scope it explicitly in the prompt.
 
-Read-only restricts *mutation through built-in tools*, not visibility: the agent
-can read outside `cwd`, and MCP tools stay available and may have side effects.
+Read-only restricts *mutation through Claude Code's built-in tools*, not
+visibility, and not your MCP servers: the agent can read outside `cwd`, and the
+MCP tools your configuration provides stay available in both modes and may have
+side effects of their own.
+
+Your own permission rules still decide. A `permissions.deny` rule in your
+settings is respected even for the MCP tools this wrapper otherwise approves —
+the consultation never gets more than you granted yourself.
 
 The one thing always denied is an **agent-bridge MCP server**
 (`mcp__codex__*`, `mcp__codex-agent__*`, `mcp__claude-code-mcp__*`, …) — because
@@ -158,7 +174,11 @@ The exact matching rule is in DESIGN.md → Trust model.
 
 The child's environment is your environment minus `CLAUDECODE` and
 `CLAUDE_CODE_*` (nested-session markers that change CLI behaviour;
-`CLAUDE_CODE_OAUTH_TOKEN` is kept) and minus `ANTHROPIC_BASE_URL`.
+`CLAUDE_CODE_OAUTH_TOKEN` is kept) and minus the transport/credential unit
+`ANTHROPIC_BASE_URL`, `ANTHROPIC_UNIX_SOCKET`, `ANTHROPIC_AUTH_TOKEN` and
+`ANTHROPIC_CUSTOM_HEADERS` — a gateway credential must not outlive the gateway
+address it belongs to. `ANTHROPIC_API_KEY` is kept, and a gateway configured
+through a settings file keeps working.
 
 ## Configuration
 

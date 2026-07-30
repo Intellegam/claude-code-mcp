@@ -20,7 +20,8 @@ You MUST read the following files for more information:
 ## Layout
 
 ```
-server.js            MCP protocol layer, tool schemas, dispatch, shutdown
+server.js            MCP protocol layer: envelope classification, tool schemas,
+                     dispatch, request cancellation, shutdown
 lib/engine.js        turns, sessions, guards, watchdogs (ported from codex-mcp)
 lib/claude-runner.js SDK adapter — one runner per turn
 lib/isolation.js     env denylist, tool disallow lists, bridge-deny hook
@@ -49,17 +50,29 @@ Test seams (read from the *server's* env, never from tool arguments):
 - **Resume is keyed by session id *and* cwd.** A different cwd is a hard failure,
   not a new session. The engine adopts whatever id `system/init` reports, even
   when it differs from the one being resumed.
-- **The single authorization gate is the `PreToolUse` hook in
-  `lib/isolation.js`**, not `canUseTool`. Extend it there rather than bolting
-  exceptions onto `disallowedTools`; the reasoning is in that file.
+- **Authorization is two gates, and they are not interchangeable.** The
+  `PreToolUse` hook in `lib/isolation.js` only *denies* (agent-bridge servers,
+  both modes) — a hook decision is terminal, so allowing there would override
+  the operator's own `permissions.deny` rules. Approving is `canUseTool`'s job,
+  read-only only, because it runs after rule evaluation. Never move an allow
+  into the hook.
 - **A consultation runs as the operator's own Claude Code.** `settingSources` is
-  unset on purpose: user + project + local config all load. The only always-deny
-  is an agent-bridge MCP server (recursion guard).
+  unset on purpose: user + project + local config all load, and their permission
+  rules stay authoritative. The only always-deny is an agent-bridge MCP server
+  (recursion guard).
 - **The tool surface is wider than it looks.** `Monitor` and `REPL` execute
-  code, delegation is called `Agent` to the model but `Task` in `system/init`,
-  and there is a family of scheduling/messaging tools. See the disallow lists in
-  `lib/isolation.js`, and the tier-2 drift guard that pins the surface, before
-  assuming read-only means read-only.
+  code, `Skill` runs inline `!` commands unless `disableSkillShellExecution` is
+  set, delegation is called `Agent` to the model but `Task` in `system/init`,
+  and there are families of scheduling, messaging, publishing and interactive
+  tools. See the disallow lists in `lib/isolation.js`, and the tier-2 drift
+  guard that pins the surface, before assuming read-only means read-only.
+- **SDK options are not always what the types say.** `settings` is typed
+  `string | Settings`, but an object is stringified with `String()` into
+  `--settings`; pass JSON. Setting `canUseTool` also changes the tool surface
+  the CLI offers (it adds the interactive tools).
+- **A failed tool call is a result with `isError`, not a JSON-RPC error.** The
+  consuming model only reads result content. `-32602` is for an unknown tool,
+  `-32603` for a fault in the protocol layer itself.
 
 ## Commands
 

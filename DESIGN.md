@@ -96,60 +96,96 @@ have side effects.
 Two things are still taken away, because they break the arrangement rather than
 serve it:
 
-- **Nested-session env markers.** `CLAUDECODE` and `CLAUDE_CODE_*` change CLI
-  behaviour when a Claude Code session spawns another; the child environment is
-  the parent's minus those (plus `ANTHROPIC_BASE_URL`, which would silently
-  redirect the consultation to another backend). `CLAUDE_CODE_OAUTH_TOKEN` is
-  the one exception kept, as a supported headless credential.
+- **Nested-session env markers and the transport/credential unit.**
+  `CLAUDECODE` and `CLAUDE_CODE_*` change CLI behaviour when a Claude Code
+  session spawns another; the child environment is the parent's minus those.
+  `CLAUDE_CODE_OAUTH_TOKEN` is the one exception kept, as a supported headless
+  credential. Dropped with them, and *as one unit*: `ANTHROPIC_BASE_URL` and
+  `ANTHROPIC_UNIX_SOCKET`, which point the consultation at another backend, and
+  `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_CUSTOM_HEADERS`, which are that
+  backend's credential — a credential must not outlive its destination, or it
+  would be presented to the default endpoint instead. `ANTHROPIC_API_KEY` is
+  bound to the default endpoint and stays. Names are matched upper-cased,
+  because Windows environments are case-insensitive. A gateway deployment
+  configures its destination in a settings file, and settings load in full.
 - **Agent-bridge MCP servers.** The operator's plugins almost certainly include
   one — codex-mcp is what calls *this* server — and a consulted Claude that can
   call Codex back closes a recursion loop. Tool names matching
-  `/^mcp__(codex|claude)(?:[-_](?:code|agent|mcp))*__/i` are denied in both
-  permission modes; every other MCP tool is allowed. The trailing `__` matters:
-  the whole server segment has to be a bridge name, so `mcp__codexdb__*` and
-  `mcp__claude-agent-inbox__*` are not caught by it.
+  `/^mcp__(codex|claude)(?:[-_](?:code|agent|mcp))*(?:[-_]v?\d+)*__/i` are
+  denied in both permission modes; every other MCP tool is allowed. The
+  trailing `__` matters: the whole server segment has to be a bridge name, so
+  `mcp__claude_code_2__*` is caught while `mcp__codexdb__*` and
+  `mcp__claude-agent-inbox__*` are not.
 
 ### Permission levels
 
 | | read-only (default) | `writable: true` |
 | --- | --- | --- |
-| `permissionMode` | unset | `bypassPermissions` |
-| removed tools | `Write`, `Edit`, `NotebookEdit`, `Bash`, `Monitor`, `REPL` + the always-blocked set | the always-blocked set |
+| `permissionMode` | unset | `bypassPermissions` + `allowDangerouslySkipPermissions` |
+| removed tools | `Write`, `Edit`, `NotebookEdit`, `Bash`, `Monitor`, `REPL`, `TaskCreate`, `TaskUpdate`, `TaskStop` + the always-blocked set | the always-blocked set |
+| settings | `disableSkillShellExecution` | — |
+| `canUseTool` | approves non-bridge MCP tools | not set (shadowed) |
 
 Always blocked, in both modes: `Task`/`Agent` (init reports the first name, the
 model sees the second), `Workflow`, `CronCreate`, `CronDelete`, `CronList`,
 `ScheduleWakeup`, `RemoteTrigger`, `SendMessage`, `SendFeedback`,
-`PushNotification`, `EnterWorktree`, `ExitWorktree`. `writable` authorizes edits
-in the caller's repo — not delegation, not scheduled or backgrounded execution,
-not moving the session to another working directory (which would also break
-cwd-keyed resume), and not messaging.
+`PushNotification`, `EnterWorktree`, `ExitWorktree`, `DesignSync`, `Projects`,
+`Artifact`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`. `writable`
+authorizes edits in the caller's repo — not delegation, not scheduled or
+backgrounded execution, not moving the session to another working directory
+(which would also break cwd-keyed resume), not messaging, and not publishing
+what the consultation read to a hosted surface. The three interactive tools are
+blocked because there is nobody to answer them: *verified*, the CLI starts
+offering them as soon as a permission-prompt host is present (read-only's
+`canUseTool`), and a call would stall the turn until its timeout.
 
 `Monitor` and `REPL` are on the read-only list for the same reason as `Bash`:
 Monitor's own guidance is to run `until <check>; do sleep 2; done`, and REPL
 evaluates JavaScript, so blocking `Bash` alone would not make the session
-read-only. Both lists are the tool surface as it actually exists at 0.3.220, and
-the tier-2 drift guard pins that surface so the next SDK bump has to be looked
-at.
+read-only. The same argument reaches past the tool list: `Skill` stays
+available, and a skill body's inline `!` commands are run by the CLI itself, so
+read-only also sets `disableSkillShellExecution`. *Verified:* that setting has
+to be passed as a JSON **string** — the SDK types accept a `Settings` object,
+but 0.3.220 forwards the value through `String()`, so an object arrives as
+`[object Object]` and the CLI exits with "Settings file not found". It lands in
+the flag-settings layer, which merges over the operator's files key by key.
+
+`TaskCreate`, `TaskUpdate` and `TaskStop` mutate session state, so they are
+read-only exclusions; `TaskGet`, `TaskList` and `TaskOutput` stay. Both lists
+are the tool surface as it actually exists at 0.3.220, and the tier-2 drift
+guard pins that surface so the next SDK bump has to be looked at.
 
 *Verified:* `disallowedTools` removes tools from the schema entirely rather than
 denying at call time; it propagates to subagents and beats on-disk allow rules,
 including a project `permissions.allow`. `allowedTools` is deliberately left
 unset so the read tools stay available without maintaining an allowlist against
-every SDK release. `bypassPermissions` needs no extra flags headless, and the
-read-only recipe never hangs on a permission prompt — a blocked tool comes back
-as "No such tool available".
+every SDK release. `bypassPermissions` requires
+`allowDangerouslySkipPermissions` alongside it, and the read-only recipe never
+hangs on a permission prompt — a blocked tool comes back as "No such tool
+available".
 
-### Why the gate is a hook
+### Two gates, and why neither is the other
 
-*Verified:* `canUseTool` is **never invoked** under `bypassPermissions` — the SDK
-auto-approves first and warns that the callback is shadowed. Since that is the
-writable mode this wrapper uses, a `canUseTool` deny would have been silently
-inert exactly where it mattered. A `PreToolUse` hook runs in every permission
-mode, and its denies bypass `canUseTool` entirely, so it is the only gate.
+The `PreToolUse` hook **denies** agent-bridge tools, in both modes. *Verified:*
+`canUseTool` is never invoked under `bypassPermissions` — the SDK auto-approves
+first and warns that the callback is shadowed — and that is the writable mode
+this wrapper uses, so a `canUseTool` deny would have been silently inert exactly
+where it mattered. Hooks run in every permission mode and their denies are
+terminal.
 
-The hook also *allows* non-bridge `mcp__*` tools: read-only mode sets no
-`permissionMode`, and without an explicit allow the CLI leaves every MCP tool
-stuck on an ungranted permission request.
+Denying is all the hook does. A hook decision is terminal in *both* directions,
+so allowing there would override the operator's own `permissions.deny` rules —
+this wrapper would be granting the consulted agent more than the operator
+granted themselves.
+
+Approving is `canUseTool`'s job, in read-only mode only. Read-only sets no
+`permissionMode`, so an MCP tool with no matching rule raises a permission
+request that nobody is there to answer; the callback approves non-bridge MCP
+tools and denies anything else rather than letting it hang. *Verified:* the
+callback runs only once the CLI actually needs a decision — `disallowedTools`,
+the operator's allow/deny rules and the hook have all been applied first, and a
+deny rule short-circuits without reaching it. That ordering is what keeps the
+operator's settings authoritative, and it is pinned by a tier-2 test.
 
 ## Known limitations
 
