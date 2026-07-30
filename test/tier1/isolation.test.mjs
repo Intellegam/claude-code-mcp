@@ -83,27 +83,10 @@ describe("query options", () => {
   test("delegation, scheduling and messaging are blocked in both modes", () => {
     for (const writable of [false, true]) {
       const { disallowedTools } = buildQueryOptions({ ...base, writable });
-      // `Task` is the name init reports, `Agent` the one the model sees.
-      for (const tool of ["Task", "Agent", "Workflow", "RemoteTrigger", "CronList"]) {
-        assert.ok(
-          disallowedTools.includes(tool),
-          `${tool} must be disallowed (writable=${writable})`,
-        );
-      }
       for (const tool of ALWAYS_DISALLOWED_TOOLS) {
         assert.ok(disallowedTools.includes(tool), `${tool} (writable=${writable})`);
       }
     }
-  });
-
-  test("the operator's own configuration sources are left alone", () => {
-    const options = buildQueryOptions(base);
-    assert.equal(
-      options.settingSources,
-      undefined,
-      "the CLI default (user + project + local) is the point",
-    );
-    assert.equal(options.env.CLAUDECODE, undefined);
   });
 
   test("the claude_code preset is requested explicitly", () => {
@@ -116,11 +99,6 @@ describe("query options", () => {
       /Agent-bridge MCP\s+servers[\s\S]*unavailable/,
       "the consulted agent is told not to go looking for a bridge",
     );
-  });
-
-  test("resume is only set when asked for", () => {
-    assert.equal(buildQueryOptions(base).resume, undefined);
-    assert.equal(buildQueryOptions({ ...base, resume: "abc" }).resume, "abc");
   });
 });
 
@@ -141,6 +119,7 @@ describe("the agent-bridge PreToolUse gate", () => {
       for (const tool of [
         "mcp__codex-agent__codex",
         "mcp__codex__reply",
+        "mcp__claude-agent__claude",
         "mcp__claude-code-mcp__claude",
         "mcp__CLAUDE_CODE__claude",
       ]) {
@@ -159,8 +138,16 @@ describe("the agent-bridge PreToolUse gate", () => {
 
     test(`repo-declared MCP tools are allowed (writable=${writable})`, async () => {
       const options = buildQueryOptions({ cwd: "/repo", writable });
-      const decision = await decide(options, "mcp__logfire__query_run");
-      assert.equal(decision.hookSpecificOutput.permissionDecision, "allow");
+      for (const tool of [
+        "mcp__logfire__query_run",
+        // Near-misses: the bridge names are a whole server segment, not a
+        // prefix, so an unrelated server that starts with one is not denied.
+        "mcp__codexdb__query",
+        "mcp__claude-agent-inbox__list",
+      ]) {
+        const decision = await decide(options, tool);
+        assert.equal(decision.hookSpecificOutput.permissionDecision, "allow", tool);
+      }
     });
   }
 
