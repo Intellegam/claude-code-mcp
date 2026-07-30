@@ -17,6 +17,8 @@
  *   #ignore-interrupt     never react to interrupt (exercises the watchdog)
  *   #finish-on-interrupt  a success result lands despite the interrupt
  *   #stderr=<text>        write <text> to the stderr callback
+ *   #try-tool=<name>      ask the canUseTool policy about <name> and report the
+ *                         decision as `[[tool:<name>:<behavior>:<message>]]`
  *
  * Every success result carries a `[[mock:{...}]]` trailer describing the
  * options the runner passed in, so tests can assert on isolation and resume.
@@ -38,6 +40,7 @@ function parseDirectives(text) {
     ignoreInterrupt: false,
     finishOnInterrupt: false,
     stderr: "",
+    tryTools: [],
   };
   const words = String(text).split(/\s+/);
   let i = 0;
@@ -75,6 +78,9 @@ function parseDirectives(text) {
         break;
       case "stderr":
         directives.stderr = (value || "").replace(/_/g, " ");
+        break;
+      case "try-tool":
+        if (value) directives.tryTools.push(value);
         break;
       default:
         break;
@@ -280,6 +286,16 @@ export function query({ prompt, options = {} }) {
       return;
     }
 
+    // Ask the wrapper's runtime tool policy about each requested tool, the way
+    // the CLI would before running one.
+    let decisions = "";
+    for (const toolName of directives.tryTools) {
+      const decision = (await options.canUseTool?.(toolName, {})) ?? {
+        behavior: "no-policy",
+      };
+      decisions += `\n[[tool:${toolName}:${decision.behavior}:${decision.message ?? ""}]]`;
+    }
+
     channel.push({
       type: "assistant",
       session_id: sessionId,
@@ -292,7 +308,7 @@ export function query({ prompt, options = {} }) {
       type: "result",
       subtype: "success",
       is_error: false,
-      result: `Mock response to: ${cleanPrompt}${trailer(directives)}`,
+      result: `Mock response to: ${cleanPrompt}${decisions}${trailer(directives)}`,
       errors: [],
     });
     // Mirrors the SDK: with a streaming prompt the iterator stays open for the

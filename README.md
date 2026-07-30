@@ -144,7 +144,8 @@ prompts — scope it explicitly in the prompt.
 
 The session is isolated from the host's configuration: no user, project or local
 settings, no hooks, no custom commands or agents, and no MCP servers (which is
-what stops a Codex → Claude → Codex loop). The environment is an explicit
+what stops a Codex → Claude → Codex loop). MCP servers are not loaded, and any
+`mcp__*` tool call is denied at call time as well. The environment is an explicit
 allowlist, so nothing else in your shell leaks into the child.
 
 Because settings are not loaded, the wrapper reads the root `CLAUDE.md` at `cwd`

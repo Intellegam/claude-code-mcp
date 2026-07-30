@@ -152,6 +152,21 @@ without maintaining an allowlist against every SDK release.
 recipe never hangs on a permission prompt — a blocked tool comes back as
 "No such tool available".
 
+### Runtime tool policy
+
+`buildToolPolicy({ writable })` returns the `canUseTool` callback installed in
+both modes. Today it default-denies every tool whose name starts with `mcp__`
+and allows everything else (which is already governed statically by
+`disallowedTools` and `permissionMode`).
+
+`strictMcpConfig` should keep MCP servers from loading at all, so this is a
+belt-and-braces authorization boundary rather than the primary one — but
+`disallowedTools` is a static list and cannot cover dynamically named
+`mcp__<server>__<tool>` tools, so a static list alone could never be sufficient.
+The policy is a function of the mode because it is the seam where a
+deployment-level allowlist of per-server read/write tool patterns (MCP
+passthrough for observability servers) will plug in.
+
 > **Deviation from the original spec.** The spec's read-only list was
 > `[Write, Edit, NotebookEdit, Bash, Task]`. Probing the 0.3.220 tool surface
 > showed that leaves `Monitor` — whose own guidance tells the model to run

@@ -123,6 +123,19 @@ describe("query options", () => {
     assert.match(options.systemPrompt.append, /second\s+opinion/i);
   });
 
+  test("a runtime tool policy is installed in both modes", async () => {
+    for (const writable of [false, true]) {
+      const { canUseTool } = buildQueryOptions({ ...base, writable });
+      assert.equal(typeof canUseTool, "function");
+      const denied = await canUseTool("mcp__anything__at_all", { q: 1 });
+      assert.equal(denied.behavior, "deny");
+      assert.match(denied.message, /MCP tools are not available/);
+      const allowed = await canUseTool("Read", { file_path: "/x" });
+      assert.equal(allowed.behavior, "allow");
+      assert.deepEqual(allowed.updatedInput, { file_path: "/x" });
+    }
+  });
+
   test("resume is only set when asked for", () => {
     assert.equal(buildQueryOptions(base).resume, undefined);
     assert.equal(buildQueryOptions({ ...base, resume: "abc" }).resume, "abc");

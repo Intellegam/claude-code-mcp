@@ -41,7 +41,10 @@ test/helpers/        harness, mock query, mock API, fixtures
 - **Resume is keyed by session id *and* cwd.** A different cwd is a hard failure,
   not a new session.
 - **`strictMcpConfig` is what strips MCP servers**; `mcpServers: {}` alone does
-  nothing. Without it, Codex → Claude → Codex recursion is possible.
+  nothing. Without it, Codex → Claude → Codex recursion is possible. The
+  `canUseTool` policy from `buildToolPolicy()` denies `mcp__*` calls on top of
+  that — it is the seam for a future per-server allowlist, so extend it there
+  rather than bolting exceptions onto `disallowedTools`.
 - **The tool surface is wider than it looks.** `Monitor` executes shell
   commands, and there is a family of delegation/scheduling tools. See the
   disallow lists in `lib/isolation.js` before assuming read-only means read-only.

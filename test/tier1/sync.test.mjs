@@ -50,6 +50,27 @@ describe("sync tool calls", () => {
     assert.ok(!trailer.disallowedTools.includes("Write"));
   });
 
+  test("mcp__ tools are denied at call time in both modes", async () => {
+    for (const writable of [false, true]) {
+      const response = await server.call("claude", {
+        prompt:
+          "#try-tool=mcp__logfire__query #try-tool=mcp__codex-agent__codex #try-tool=Read policy",
+        writable,
+      });
+      const output = response.result.content[0].text;
+      const decisions = [...output.matchAll(/\[\[tool:([^:]+):([^:]+):([^\]]*)\]\]/g)].map(
+        (match) => ({ tool: match[1], behavior: match[2], message: match[3] }),
+      );
+      assert.equal(decisions.length, 3, output);
+      assert.deepEqual(
+        decisions.map((decision) => decision.behavior),
+        ["deny", "deny", "allow"],
+        `writable=${writable}`,
+      );
+      assert.match(decisions[0].message, /MCP tools are not available/);
+    }
+  });
+
   test("cwd is passed through to the SDK", async () => {
     const response = await server.call("claude", { prompt: "where", cwd: REPO_ROOT });
     assert.equal(mockTrailer(response.result.content[0].text).cwd, REPO_ROOT);
