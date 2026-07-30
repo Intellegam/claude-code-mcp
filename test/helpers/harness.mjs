@@ -3,10 +3,33 @@
  * over stdio, the way a real MCP client does.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import readline from "node:readline";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+/** How long a closing server gets to exit on its own before it is killed. */
+const CLOSE_GRACE_MS = 3000;
+
+/**
+ * Every descendant of `pid`, deepest last. The SDK spawns the CLI as a child of
+ * the server, so killing the server alone can leave a grandchild behind.
+ * `pgrep` exits 1 — i.e. throws — when a process has no children.
+ */
+function descendantsOf(pid) {
+  let found = [];
+  try {
+    const children = execFileSync("pgrep", ["-P", String(pid)])
+      .toString()
+      .split("\n")
+      .filter(Boolean)
+      .map(Number);
+    for (const child of children) found = [...found, child, ...descendantsOf(child)];
+  } catch {
+    // no children, or no pgrep on this platform
+  }
+  return found;
+}
 
 export const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(TEST_DIR, "..", "..");
@@ -32,7 +55,7 @@ export function spawnServer({ env = {}, cwd = REPO_ROOT, useMockQuery = true } =
   // Every request registers its waiter synchronously with the write that
   // triggers it, so a response can never arrive before someone is listening —
   // and so an un-awaited `call()` has already been sent when it returns.
-  const waiters = new Map(); // id -> {resolve, timer}
+  const waiters = new Map(); // id -> {resolve, reject, timer, promise}
 
   readline.createInterface({ input: proc.stdout }).on("line", (line) => {
     let message;
@@ -48,6 +71,9 @@ export function spawnServer({ env = {}, cwd = REPO_ROOT, useMockQuery = true } =
     waiter.resolve(message);
   });
 
+  // A response can no longer arrive once the child is gone.
+  proc.on("exit", () => abandonWaiters("the server exited"));
+
   let nextId = 1;
 
   function send(message) {
@@ -55,16 +81,40 @@ export function spawnServer({ env = {}, cwd = REPO_ROOT, useMockQuery = true } =
   }
 
   function waitFor(id, timeoutMs = 15000) {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+    const waiter = {};
+    waiter.promise = new Promise((resolve, reject) => {
+      waiter.resolve = resolve;
+      waiter.reject = reject;
+      waiter.timer = setTimeout(() => {
         waiters.delete(id);
         reject(new Error(`timed out waiting for response ${id}`));
       }, timeoutMs);
-      waiters.set(id, { resolve, timer });
     });
+    waiters.set(id, waiter);
+    return waiter.promise;
   }
 
-  async function request(method, params, timeoutMs) {
+  /**
+   * Fail every pending waiter and clear its timer.
+   *
+   * Those timers are referenced, so a test that leaves a call un-awaited — the
+   * normal shape of a *failing* test — would otherwise hold the worker open for
+   * the full timeout. The no-op catch keeps a waiter nobody is awaiting from
+   * being reported as an unhandled rejection; a test that does await it still
+   * sees the failure.
+   */
+  function abandonWaiters(reason) {
+    for (const [id, waiter] of waiters) {
+      clearTimeout(waiter.timer);
+      waiter.promise.catch(() => {});
+      waiter.reject(new Error(`response ${id} abandoned: ${reason}`));
+    }
+    waiters.clear();
+  }
+
+  // Deliberately not `async`: callers get the waiter's own promise, so the
+  // no-op catch in `abandonWaiters` really does cover the promise they hold.
+  function request(method, params, timeoutMs) {
     const id = nextId++;
     send({ jsonrpc: "2.0", id, method, params });
     return waitFor(id, timeoutMs);
@@ -81,7 +131,7 @@ export function spawnServer({ env = {}, cwd = REPO_ROOT, useMockQuery = true } =
       return response;
     },
 
-    async call(name, args, timeoutMs) {
+    call(name, args, timeoutMs) {
       return request("tools/call", { name, arguments: args }, timeoutMs);
     },
 
@@ -122,13 +172,37 @@ export function spawnServer({ env = {}, cwd = REPO_ROOT, useMockQuery = true } =
       return ids.map((id) => waitFor(id, timeoutMs));
     },
 
-    close() {
-      try {
-        proc.stdin.end();
-      } catch {
-        // already gone
+    /**
+     * Shut the server down and leave nothing behind: pending waiters are
+     * failed, the server is asked to exit and killed if it will not, and any
+     * surviving descendant — the SDK's CLI grandchild — is reaped. A failing
+     * suite must not orphan a CLI or hang the test worker.
+     */
+    async close() {
+      const strays = descendantsOf(proc.pid);
+      abandonWaiters("the test harness closed the server");
+
+      if (proc.exitCode === null && proc.signalCode === null) {
+        const exited = new Promise((resolve) => proc.once("exit", resolve));
+        try {
+          proc.stdin.end();
+        } catch {
+          // already gone
+        }
+        proc.kill("SIGTERM");
+        const killer = setTimeout(() => proc.kill("SIGKILL"), CLOSE_GRACE_MS);
+        killer.unref?.();
+        await exited;
+        clearTimeout(killer);
       }
-      proc.kill("SIGKILL");
+
+      for (const pid of strays) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // already gone
+        }
+      }
     },
   };
 }

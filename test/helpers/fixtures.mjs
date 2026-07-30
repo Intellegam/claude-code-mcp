@@ -173,9 +173,8 @@ export async function startTier2({
   env = {},
 } = {}) {
   const sandbox = createSandbox({ mcpServers });
-  const mock = await startMock({
-    turns: typeof turns === "function" ? turns(sandbox) : turns,
-  });
+  let mock = null;
+  let server = null;
 
   const spawn = () =>
     spawnServer({
@@ -189,22 +188,36 @@ export async function startTier2({
       },
     });
 
+  try {
+    mock = await startMock({
+      turns: typeof turns === "function" ? turns(sandbox) : turns,
+    });
+    server = spawn();
+    await server.init();
+  } catch (err) {
+    // Half a setup still has to be taken down: the mock's listening socket
+    // would otherwise hold the test worker open long after the suite failed.
+    await server?.close().catch(() => {});
+    await mock?.stop().catch(() => {});
+    sandbox.cleanup();
+    throw err;
+  }
+
   const ctx = {
     sandbox,
     mock,
-    server: spawn(),
+    server,
     /** Restart the MCP server, dropping its in-memory sessions. */
     async restart() {
-      ctx.server.close();
+      await ctx.server.close();
       ctx.server = spawn();
       await ctx.server.init();
     },
     async stop() {
-      ctx.server.close();
+      await ctx.server.close();
       await mock.stop();
       sandbox.cleanup();
     },
   };
-  await ctx.server.init();
   return ctx;
 }
