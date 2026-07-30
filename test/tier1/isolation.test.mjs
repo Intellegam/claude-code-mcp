@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  ALWAYS_DISALLOWED_TOOLS,
   buildChildEnv,
   buildQueryOptions,
   buildSystemPromptAppend,
@@ -74,23 +75,37 @@ describe("child environment allowlist", () => {
 describe("query options", () => {
   const base = { cwd: "/repo", parentEnv: PARENT_ENV, readContext: () => null };
 
-  test("read-only mode removes the write tools and delegation", () => {
+  test("read-only mode removes every write and execute surface", () => {
     const options = buildQueryOptions(base);
-    assert.deepEqual(options.disallowedTools, [
-      "Write",
-      "Edit",
-      "NotebookEdit",
-      "Bash",
-      "Task",
-    ]);
+    for (const tool of ["Write", "Edit", "NotebookEdit", "Bash", "Monitor"]) {
+      assert.ok(
+        options.disallowedTools.includes(tool),
+        `${tool} must be disallowed`,
+      );
+    }
     assert.equal(options.permissionMode, undefined);
     assert.equal(options.allowedTools, undefined, "read tools stay available");
   });
 
-  test("writable mode bypasses permissions but keeps Task blocked", () => {
+  test("writable mode bypasses permissions but keeps delegation blocked", () => {
     const options = buildQueryOptions({ ...base, writable: true });
     assert.equal(options.permissionMode, "bypassPermissions");
-    assert.deepEqual(options.disallowedTools, ["Task"]);
+    assert.deepEqual(options.disallowedTools, ALWAYS_DISALLOWED_TOOLS);
+    for (const tool of ["Write", "Edit", "Bash"]) {
+      assert.ok(!options.disallowedTools.includes(tool), `${tool} is allowed`);
+    }
+  });
+
+  test("delegation, scheduling and messaging are blocked in both modes", () => {
+    for (const writable of [false, true]) {
+      const { disallowedTools } = buildQueryOptions({ ...base, writable });
+      for (const tool of ALWAYS_DISALLOWED_TOOLS) {
+        assert.ok(
+          disallowedTools.includes(tool),
+          `${tool} must be disallowed (writable=${writable})`,
+        );
+      }
+    }
   });
 
   test("ambient configuration is stripped", () => {

@@ -23,13 +23,9 @@ describe("sync tool calls", () => {
   test("read-only is the default tool surface", async () => {
     const response = await server.call("claude", { prompt: "opts" });
     const trailer = mockTrailer(response.result.content[0].text);
-    assert.deepEqual(trailer.disallowedTools, [
-      "Write",
-      "Edit",
-      "NotebookEdit",
-      "Bash",
-      "Task",
-    ]);
+    for (const tool of ["Write", "Edit", "NotebookEdit", "Bash", "Monitor", "Task"]) {
+      assert.ok(trailer.disallowedTools.includes(tool), `${tool} disallowed`);
+    }
     assert.equal(trailer.permissionMode, null);
     assert.equal(trailer.strictMcpConfig, true);
     assert.deepEqual(trailer.settingSources, []);
@@ -50,7 +46,8 @@ describe("sync tool calls", () => {
     });
     const trailer = mockTrailer(response.result.content[0].text);
     assert.equal(trailer.permissionMode, "bypassPermissions");
-    assert.deepEqual(trailer.disallowedTools, ["Task"]);
+    assert.ok(trailer.disallowedTools.includes("Task"));
+    assert.ok(!trailer.disallowedTools.includes("Write"));
   });
 
   test("cwd is passed through to the SDK", async () => {
