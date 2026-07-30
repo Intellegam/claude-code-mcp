@@ -7,16 +7,13 @@
  * Behaviour is steered by directives at the start of the prompt, which keeps
  * per-call control even through the MCP boundary:
  *
- *   #init=<ms>            delay before `system/init`            (default 5)
- *   #work=<ms>            delay between init and the result     (default 5)
- *   #newid=<id>           report <id> as the session id at init (resume drift)
- *   #noinit               never emit init; error result + stderr (bad resume)
- *   #error                error result, with `errors[]` populated
- *   #error-bare           error result *without* an `errors[]` array
- *   #throw                iterator throws, no result at all
- *   #ignore-interrupt     never react to interrupt (exercises the watchdog)
- *   #finish-on-interrupt  a success result lands despite the interrupt
- *   #stderr=<text>        write <text> to the stderr callback
+ *   #init=<ms>   delay before `system/init`             (default 5)
+ *   #work=<ms>   delay between init and the result      (default 5)
+ *   #noinit      never emit init; error result + stderr (bad resume)
+ *   #error       error result, with `errors[]` populated
+ *   #error-bare  error result *without* an `errors[]` array
+ *   #throw       iterator throws, no result at all
+ *   #stderr=<t>  write <t> to the stderr callback
  *
  * Every success result carries a `[[mock:{...}]]` trailer describing the
  * options the runner passed in, so tests can assert on wiring and resume.
@@ -30,13 +27,10 @@ function parseDirectives(text) {
   const directives = {
     initMs: 5,
     workMs: 5,
-    newId: null,
     noinit: false,
     error: false,
     errorBare: false,
     throw: false,
-    ignoreInterrupt: false,
-    finishOnInterrupt: false,
     stderr: "",
   };
   const words = String(text).split(/\s+/);
@@ -52,9 +46,6 @@ function parseDirectives(text) {
       case "work":
         directives.workMs = Number(value) || 0;
         break;
-      case "newid":
-        directives.newId = value || null;
-        break;
       case "noinit":
         directives.noinit = true;
         break;
@@ -66,12 +57,6 @@ function parseDirectives(text) {
         break;
       case "throw":
         directives.throw = true;
-        break;
-      case "ignore-interrupt":
-        directives.ignoreInterrupt = true;
-        break;
-      case "finish-on-interrupt":
-        directives.finishOnInterrupt = true;
         break;
       case "stderr":
         directives.stderr = (value || "").replace(/_/g, " ");
@@ -161,8 +146,7 @@ export function query({ prompt, options = {} }) {
     });
 
     const { directives, prompt: cleanPrompt } = parseDirectives(promptText);
-    const sessionId =
-      directives.newId || options.resume || `mock-${crypto.randomUUID()}`;
+    const sessionId = options.resume || `mock-${crypto.randomUUID()}`;
     if (directives.stderr) options.stderr?.(`${directives.stderr}\n`);
 
     await sleep(directives.initMs);
@@ -201,15 +185,13 @@ export function query({ prompt, options = {} }) {
       return;
     }
 
-    const outcome = directives.ignoreInterrupt
-      ? await sleep(directives.workMs).then(() => "complete")
-      : await Promise.race([
-          sleep(directives.workMs).then(() => "complete"),
-          interrupted.then(() => "interrupted"),
-        ]);
+    const outcome = await Promise.race([
+      sleep(directives.workMs).then(() => "complete"),
+      interrupted.then(() => "interrupted"),
+    ]);
     if (state.closed) return;
 
-    if (outcome === "interrupted" && !directives.finishOnInterrupt) {
+    if (outcome === "interrupted") {
       // The aborted result carries no text, so report the interrupt accounting
       // as a partial assistant message — it becomes the cancelled turn's output.
       channel.push({

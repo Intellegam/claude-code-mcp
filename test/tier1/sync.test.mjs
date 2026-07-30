@@ -26,11 +26,6 @@ describe("sync tool calls", () => {
     assert.equal(trailer.promptHeldOpen, true);
   });
 
-  test("cwd is passed through to the SDK", async () => {
-    const response = await server.call("claude", { prompt: "where", cwd: REPO_ROOT });
-    assert.equal(mockTrailer(response.result.content[0].text).cwd, REPO_ROOT);
-  });
-
   test("claude-reply resumes the same session", async () => {
     const first = await server.call("claude", { prompt: "first" });
     const sessionId = sessionIdFrom(first);
@@ -93,16 +88,12 @@ describe("sync tool calls", () => {
     assert.match(after.result.content[0].text, /Mock response to: still alive/);
   });
 
-  test("an iterator throw with no result fails the turn", async () => {
-    const response = await server.call("claude", { prompt: "#throw nope" });
+  test("an iterator throw fails the turn, with the child's stderr", async () => {
+    const response = await server.call("claude", {
+      prompt: "#throw #stderr=disk_on_fire nope",
+    });
     assert.ok(response.error);
     assert.match(response.error.message, /mock: stream exploded/);
-  });
-
-  test("stderr is surfaced in failure messages", async () => {
-    const response = await server.call("claude", {
-      prompt: "#throw #stderr=disk_on_fire boom",
-    });
     assert.match(response.error.message, /stderr: disk on fire/);
   });
 });

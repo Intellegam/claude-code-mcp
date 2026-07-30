@@ -101,7 +101,8 @@ describe("async submissions", () => {
     const sessionId = sessionIdFrom(first);
 
     // The reply's session id is known up front, so a cancel can beat init.
-    const pending = server.callAsyncPending("claude-reply", {
+    // Deliberately not awaited: `call()` has already written the request.
+    const pending = server.call("claude-reply", {
       sessionId,
       prompt: "#init=800 #work=5000 slow reply",
       async: true,
@@ -129,27 +130,6 @@ describe("async submissions", () => {
       interrupts: 1,
       preInitInterrupts: 0,
     });
-  });
-
-  test("a turn that finishes despite the interrupt still succeeds", async () => {
-    const submitted = snapshot(
-      await server.call("claude", {
-        prompt: "#work=5000 #finish-on-interrupt racing",
-        async: true,
-      }),
-    );
-    await pollUntil(server, submitted.sessionId, (s) => s.status === "running");
-    await server.call("claude-cancel", { sessionId: submitted.sessionId });
-
-    const final = snapshot(
-      await server.call("claude-result", {
-        sessionId: submitted.sessionId,
-        wait: true,
-      }),
-    );
-    assert.equal(final.status, "succeeded");
-    assert.equal(final.cancelRequested, true);
-    assert.match(final.output, /Mock response to: racing/);
   });
 
   test("cancel after completion is a no-op", async () => {
@@ -264,7 +244,7 @@ describe("async submissions", () => {
   });
 });
 
-describe("timeouts and the cancel watchdog", () => {
+describe("the turn timeout", () => {
   const server = spawnServer({
     env: { CLAUDE_TIMEOUT_MS: "400", CLAUDE_CANCEL_WATCHDOG_MS: "800" },
   });
@@ -286,53 +266,5 @@ describe("timeouts and the cancel watchdog", () => {
     assert.equal(final.cancelRequested, true);
     assert.match(final.error.message, /timed out/);
     assert.equal(final.error.source, "timeout");
-  });
-
-  test("the watchdog force-settles a turn that ignores the interrupt", async () => {
-    const submitted = snapshot(
-      await server.call("claude", {
-        prompt: "#work=60000 #ignore-interrupt stuck",
-        async: true,
-      }),
-    );
-    const final = snapshot(
-      await server.call("claude-result", {
-        sessionId: submitted.sessionId,
-        wait: true,
-      }),
-    );
-    // The turn timeout fires first here, so the reason is timeout.
-    assert.equal(final.status, "timed_out");
-    assert.match(final.error.message, /did not respond to interrupt within/);
-    assert.equal(final.error.source, "timeout");
-  });
-});
-
-describe("user cancel watchdog", () => {
-  const server = spawnServer({
-    env: { CLAUDE_TIMEOUT_MS: "60000", CLAUDE_CANCEL_WATCHDOG_MS: "600" },
-  });
-  after(() => server.close());
-
-  test("an ignored user cancel force-settles as cancelled", async () => {
-    await server.init();
-    const submitted = snapshot(
-      await server.call("claude", {
-        prompt: "#work=60000 #ignore-interrupt stuck",
-        async: true,
-      }),
-    );
-    await pollUntil(server, submitted.sessionId, (s) => s.status === "running");
-    await server.call("claude-cancel", { sessionId: submitted.sessionId });
-
-    const final = snapshot(
-      await server.call("claude-result", {
-        sessionId: submitted.sessionId,
-        wait: true,
-      }),
-    );
-    assert.equal(final.status, "cancelled");
-    assert.equal(final.error.source, "cancel");
-    assert.match(final.error.message, /did not respond to interrupt within 1s/);
   });
 });

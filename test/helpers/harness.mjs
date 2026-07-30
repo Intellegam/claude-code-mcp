@@ -30,8 +30,9 @@ export function spawnServer({ env = {}, cwd = REPO_ROOT, useMockQuery = true } =
   proc.stderr.resume();
 
   // Every request registers its waiter synchronously with the write that
-  // triggers it, so a response can never arrive before someone is listening.
-  const waiters = new Map(); // id -> {resolve, reject, timer}
+  // triggers it, so a response can never arrive before someone is listening —
+  // and so an un-awaited `call()` has already been sent when it returns.
+  const waiters = new Map(); // id -> {resolve, timer}
 
   readline.createInterface({ input: proc.stdout }).on("line", (line) => {
     let message;
@@ -59,7 +60,7 @@ export function spawnServer({ env = {}, cwd = REPO_ROOT, useMockQuery = true } =
         waiters.delete(id);
         reject(new Error(`timed out waiting for response ${id}`));
       }, timeoutMs);
-      waiters.set(id, { resolve, reject, timer });
+      waiters.set(id, { resolve, timer });
     });
   }
 
@@ -78,18 +79,6 @@ export function spawnServer({ env = {}, cwd = REPO_ROOT, useMockQuery = true } =
       const response = await request("initialize", {});
       send({ jsonrpc: "2.0", method: "initialized", params: {} });
       return response;
-    },
-
-    /** Fire a tool call without awaiting it; returns the pending promise. */
-    callAsyncPending(name, args, timeoutMs) {
-      const id = nextId++;
-      send({
-        jsonrpc: "2.0",
-        id,
-        method: "tools/call",
-        params: { name, arguments: args },
-      });
-      return waitFor(id, timeoutMs);
     },
 
     async call(name, args, timeoutMs) {
