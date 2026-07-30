@@ -270,6 +270,34 @@ describe("cancelling a turn that has not initialized", () => {
     engine.cancelTurn(turn);
     assert.equal(turn.cancelRequested, true);
   });
+
+  test("a resume re-keyed onto a busy session fails under the caller's id", async () => {
+    // The CLI is free to answer a resume with another session's id. When that
+    // id has a live turn the claim is rejected — and the failure must settle
+    // under the id the caller used, or the caller's session is left pointing
+    // at a turn record the settle path just deleted.
+    const { engine, runners } = stalledEngine();
+
+    const busy = engine.beginStart({ prompt: "hold the line", cwd: "/repo" });
+    runners[0].init("taken");
+    assert.equal(busy.status, "running");
+
+    const reply = engine.beginReply({ sessionId: "mine", prompt: "resume" });
+    runners[1].init("taken");
+
+    assert.equal(reply.status, "failed");
+    assert.match(reply.error.message, /already has an active turn/);
+    assert.equal(reply.sessionId, "mine", "settled under the caller's id");
+
+    // The caller's session still resolves to a real turn record…
+    const snapshot = await engine.result({ sessionId: "mine" });
+    assert.equal(snapshot.status, "failed");
+    // …the busy session was left alone…
+    assert.equal(busy.status, "running");
+    // …and the caller's session is not wedged: it accepts the next reply.
+    const retry = engine.beginReply({ sessionId: "mine", prompt: "again" });
+    assert.equal(retry.status, "starting");
+  });
 });
 
 describe("sessions", () => {
