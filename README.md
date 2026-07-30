@@ -10,22 +10,18 @@ semantics.
 ## How it works
 
 1. Speaks the MCP JSON-RPC protocol over stdio.
-2. Runs each turn as an isolated Claude Code session through the
-   [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk)
-   — no ambient plugins, MCP servers, hooks or settings are loaded, so a
-   consulted Claude cannot call back into Codex.
-3. Tracks sessions in memory and continues them through the SDK's `resume`,
-   which also works after a restart.
-4. Enforces a configurable turn timeout (default 30 minutes) and supports
-   cancellation with a watchdog.
-5. Supports async mode — return a sessionId immediately and poll for the result.
+2. Runs each turn as a Claude Code session through the
+   [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk),
+   with the operator's own configuration — the consulted agent sees what you
+   would see.
 
 ## Prerequisites
 
 - Node.js 18 or higher
-- Working Claude Code authentication (an `ANTHROPIC_API_KEY` in the environment,
-  or a host already logged in via Claude Code — the credentials in `~/.claude`
-  are reachable because `HOME` is passed through)
+- Working Claude Code authentication (an `ANTHROPIC_API_KEY` or
+  `CLAUDE_CODE_OAUTH_TOKEN` in the environment, or a host already logged in via
+  Claude Code — the credentials in `~/.claude` are reachable because the child
+  inherits your environment)
 
 The Claude Code CLI itself ships with the SDK dependency; nothing else to
 install.
@@ -86,8 +82,10 @@ Resume is keyed by session id **and** cwd, so pass the same `cwd` the session wa
 created with — always, if the server may have restarted. A mismatch fails with a
 message telling you which cwd was tried.
 
-A follow-up inherits the permission level of the session (a session started with
-`writable: true` stays writable, until the server restarts).
+A follow-up inherits the permission level recorded for the session and cannot
+ask for more: `claude-reply` has no `writable` parameter. A server restart drops
+that memory, so a reply to a session it no longer knows is **read-only** — start
+a new `claude` session if you need write access again.
 
 ### `claude-result` — poll for the latest turn
 
@@ -135,22 +133,28 @@ one turn may be active at a time.
 
 ## What the consulted Claude can see and do
 
-Read-only is the default: no `Write`, `Edit`, `NotebookEdit`, `Bash` or
-`Monitor`. Delegation, scheduling, worktree switching and messaging tools
-(`Task`, `Workflow`, `Cron*`, `ScheduleWakeup`, `SendMessage`,
-`PushNotification`, `Enter/ExitWorktree`) are blocked in **both** modes.
-`writable: true` adds the file and shell tools and runs without permission
-prompts — scope it explicitly in the prompt.
+**It runs as your own Claude Code.** User, project and local settings all load:
+memory files, hooks, skills, plugins and MCP servers. The trade is a wider tool
+surface than a sealed sandbox, and the startup cost of your MCP servers on every
+turn — in exchange the consultation has the context and tooling you do.
 
-The session is isolated from the host's configuration: no user, project or local
-settings, no hooks, no custom commands or agents, and no MCP servers (which is
-what stops a Codex → Claude → Codex loop). MCP servers are not loaded, and any
-`mcp__*` tool call is denied at call time as well. The environment is an explicit
-allowlist, so nothing else in your shell leaks into the child.
+Read-only is the default: no `Write`, `Edit`, `NotebookEdit`, `Bash`, `Monitor`
+or `REPL`. Delegation, scheduling, worktree switching and messaging tools
+(`Task`/`Agent`, `Workflow`, `Cron*`, `ScheduleWakeup`, `RemoteTrigger`,
+`SendMessage`, `SendFeedback`, `PushNotification`, `Enter/ExitWorktree`) are
+blocked in **both** modes. `writable: true` adds the file and shell tools and
+runs without permission prompts — scope it explicitly in the prompt.
 
-Because settings are not loaded, the wrapper reads the root `CLAUDE.md` at `cwd`
-itself and appends it to the system prompt. **Limitation:** only the root file —
-no `@`-import resolution, no nested `CLAUDE.md`, no `~/.claude/CLAUDE.md`.
+Read-only restricts *mutation through built-in tools*, not visibility: the agent
+can read outside `cwd`, and MCP tools stay available and may have side effects.
+
+The one thing always denied is an **agent-bridge MCP server** — any tool matching
+`mcp__codex*` or `mcp__claude[-_]code*` — because a consulted Claude calling
+Codex back would close a Codex → Claude → Codex loop.
+
+The child's environment is your environment minus `CLAUDECODE` and
+`CLAUDE_CODE_*` (nested-session markers that change CLI behaviour;
+`CLAUDE_CODE_OAUTH_TOKEN` is kept) and minus `ANTHROPIC_BASE_URL`.
 
 ## Configuration
 
