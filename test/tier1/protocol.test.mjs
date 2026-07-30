@@ -152,6 +152,28 @@ describe("JSON-RPC envelopes", () => {
     assert.equal(response.id, 8);
   });
 
+  test("an oversized line is rejected even when its newline arrives with it", async () => {
+    // Grown to just under the limit without a newline — the buffered-length
+    // guard never trips — then completed by one small chunk carrying both the
+    // overflow and the terminator. The line is a syntactically valid ping, so
+    // reaching the parser would *answer* it.
+    const MAX = 10 * 1024 * 1024;
+    const head = '{"jsonrpc":"2.0","id":4242,"method":"ping","params":{"pad":"';
+    const take = record();
+    await feed(head + "x".repeat(MAX - 500 - head.length));
+    await feed(`${"x".repeat(1500)}"}}\n`);
+    const responses = await take({ ms: 5000, min: 1 });
+    assert.equal(responses[0].error.code, -32700);
+    assert.match(responses[0].error.message, /exceeds/);
+    assert.equal(responses[0].id, null);
+    assert.ok(
+      responses.every((r) => r.id !== 4242),
+      "the oversized ping must never be answered",
+    );
+    const alive = await server.request("tools/list", {});
+    assert.equal(alive.result.tools.length, 4, "server still alive");
+  });
+
   test("an over-long line is rejected without being buffered", async () => {
     const take = record();
     await feed(`{"padding":"${"x".repeat(11 * 1024 * 1024)}`);

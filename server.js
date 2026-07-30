@@ -171,6 +171,17 @@ function onStdinData(chunk) {
   while ((newline = stdinBuffer.indexOf("\n")) !== -1) {
     const line = stdinBuffer.slice(0, newline);
     stdinBuffer = stdinBuffer.slice(newline + 1);
+    // The buffered-length check below never sees a line whose terminating
+    // newline arrived in the same chunk that crossed the limit — the line has
+    // to be measured here too, or it reaches the parser.
+    if (line.length > MAX_LINE_CHARS) {
+      sendError(
+        null,
+        -32700,
+        `Request line exceeds ${MAX_LINE_CHARS} characters`,
+      );
+      continue;
+    }
     acceptLine(line);
     if (shuttingDown) return;
   }
