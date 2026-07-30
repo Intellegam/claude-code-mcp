@@ -40,16 +40,16 @@ describe("MCP protocol", () => {
     assert.equal(response.error.code, -32602);
   });
 
-  test("tools/call with no arguments object does not crash the server", async () => {
-    const id = 9001;
+  test("junk input does not crash the server", async () => {
     server.send({
       jsonrpc: "2.0",
-      id,
+      id: 9001,
       method: "tools/call",
-      params: { name: "claude" },
+      params: { name: "claude" }, // no arguments object at all
     });
+    server.proc.stdin.write("not json at all\n");
     const response = await server.request("tools/list", {});
-    assert.ok(response.result.tools.length === 4, "server still alive");
+    assert.equal(response.result.tools.length, 4, "server still alive");
   });
 
   test("malformed tool args produce an error, not a hang", async () => {
@@ -62,11 +62,5 @@ describe("MCP protocol", () => {
 
     const badPromptType = await server.call("claude", { prompt: 42 });
     assert.match(badPromptType.error.message, /non-empty prompt/);
-  });
-
-  test("non-JSON input is ignored", async () => {
-    server.proc.stdin.write("not json at all\n");
-    const response = await server.request("tools/list", {});
-    assert.equal(response.result.tools.length, 4);
   });
 });

@@ -14,14 +14,21 @@
  */
 
 import readline from "node:readline";
-import { createEngine, DEFAULT_TIMEOUT_MS } from "./lib/engine.js";
+import {
+  createEngine,
+  DEFAULT_CANCEL_WATCHDOG_MS,
+  DEFAULT_TIMEOUT_MS,
+} from "./lib/engine.js";
 import { createRunnerFactory, loadQuery } from "./lib/claude-runner.js";
 
 const VERSION = "0.1.0";
 const TIMEOUT_MS =
   parseInt(process.env.CLAUDE_TIMEOUT_MS, 10) || DEFAULT_TIMEOUT_MS;
 const CANCEL_WATCHDOG_MS =
-  parseInt(process.env.CLAUDE_CANCEL_WATCHDOG_MS, 10) || 30_000;
+  parseInt(process.env.CLAUDE_CANCEL_WATCHDOG_MS, 10) ||
+  DEFAULT_CANCEL_WATCHDOG_MS;
+/** Upper bound on a clean shutdown before the process is torn down anyway. */
+const SHUTDOWN_GRACE_MS = 2_000;
 
 const engine = createEngine({
   createRunner: createRunnerFactory({ query: await loadQuery() }),
@@ -115,7 +122,16 @@ const mcpRl = readline.createInterface({
   terminal: false,
 });
 
-mcpRl.on("line", async (line) => {
+/** In-flight request handlers, so shutdown can let them answer first. */
+const inFlight = new Set();
+
+mcpRl.on("line", (line) => {
+  const pending = handleLine(line);
+  inFlight.add(pending);
+  pending.finally(() => inFlight.delete(pending));
+});
+
+async function handleLine(line) {
   let message;
   try {
     message = JSON.parse(line);
@@ -156,7 +172,7 @@ mcpRl.on("line", async (line) => {
     console.error("Error processing message:", e);
     if (message?.id !== undefined) sendError(message.id, -32603, e.message);
   }
-});
+}
 
 async function handleToolCall(message) {
   const name = message.params?.name;
@@ -231,9 +247,32 @@ function sendError(id, code, message) {
 // Clean shutdown
 // ---------------------------------------------------------------------------
 
-function shutdown() {
-  engine.shutdown();
-  process.exit();
+let shuttingDown = false;
+
+/**
+ * Close the live turns, then let the requests they were blocking answer before
+ * the process goes away — a client waiting on a sync `claude` call gets a
+ * JSON-RPC error instead of a silently dropped connection. Bounded, because a
+ * child that refuses to die must not hold the server open.
+ */
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  const grace = new Promise((resolve) => {
+    setTimeout(resolve, SHUTDOWN_GRACE_MS).unref?.();
+  });
+  const drain = (async () => {
+    // Not sequential: closing a runner settles its turn (and so answers the
+    // request that was blocked on it) well before `close()` has finished
+    // reaping the child.
+    await Promise.allSettled([engine.shutdown(), ...inFlight]);
+    // stdout is a pipe: make sure the last responses are actually flushed.
+    await new Promise((resolve) => process.stdout.write("", resolve));
+  })();
+
+  await Promise.race([drain, grace]);
+  process.exit(0);
 }
 
 process.on("SIGINT", shutdown);

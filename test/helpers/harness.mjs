@@ -27,13 +27,10 @@ export function spawnServer({ env = {}, cwd = REPO_ROOT, useMockQuery = true } =
   });
   proc.stdout.setEncoding("utf8");
   proc.stderr.setEncoding("utf8");
+  proc.stderr.resume();
 
-  let stderr = "";
-  proc.stderr.on("data", (chunk) => {
-    stderr += chunk;
-  });
-
-  const byId = new Map(); // id -> response
+  // Every request registers its waiter synchronously with the write that
+  // triggers it, so a response can never arrive before someone is listening.
   const waiters = new Map(); // id -> {resolve, reject, timer}
 
   readline.createInterface({ input: proc.stdout }).on("line", (line) => {
@@ -43,15 +40,11 @@ export function spawnServer({ env = {}, cwd = REPO_ROOT, useMockQuery = true } =
     } catch {
       return;
     }
-    if (message.id === undefined) return;
     const waiter = waiters.get(message.id);
-    if (waiter) {
-      waiters.delete(message.id);
-      clearTimeout(waiter.timer);
-      waiter.resolve(message);
-    } else {
-      byId.set(message.id, message);
-    }
+    if (!waiter) return;
+    waiters.delete(message.id);
+    clearTimeout(waiter.timer);
+    waiter.resolve(message);
   });
 
   let nextId = 1;
@@ -61,11 +54,6 @@ export function spawnServer({ env = {}, cwd = REPO_ROOT, useMockQuery = true } =
   }
 
   function waitFor(id, timeoutMs = 15000) {
-    if (byId.has(id)) {
-      const message = byId.get(id);
-      byId.delete(id);
-      return Promise.resolve(message);
-    }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         waiters.delete(id);
@@ -85,7 +73,6 @@ export function spawnServer({ env = {}, cwd = REPO_ROOT, useMockQuery = true } =
     proc,
     send,
     request,
-    getStderr: () => stderr,
 
     async init() {
       const response = await request("initialize", {});
@@ -107,6 +94,28 @@ export function spawnServer({ env = {}, cwd = REPO_ROOT, useMockQuery = true } =
 
     async call(name, args, timeoutMs) {
       return request("tools/call", { name, arguments: args }, timeoutMs);
+    },
+
+    /**
+     * Write several tool calls in a *single* stdin chunk, so the server's line
+     * handler starts them all before any of them can await. That is what makes
+     * ordering races between two requests reproducible.
+     */
+    callInOneChunk(calls, timeoutMs) {
+      const ids = calls.map(() => nextId++);
+      proc.stdin.write(
+        `${calls
+          .map((call, i) =>
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: ids[i],
+              method: "tools/call",
+              params: { name: call.name, arguments: call.args },
+            }),
+          )
+          .join("\n")}\n`,
+      );
+      return ids.map((id) => waitFor(id, timeoutMs));
     },
 
     close() {

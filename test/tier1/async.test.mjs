@@ -58,7 +58,7 @@ describe("async submissions", () => {
     const current = snapshot(
       await server.call("claude-result", { sessionId: submitted.sessionId }),
     );
-    assert.ok(Date.now() - before < 500);
+    assert.ok(Date.now() - before < 1500, "a round trip, not the turn");
     assert.equal(current.done, false);
     assert.equal(current.status, "running");
 
@@ -107,6 +107,11 @@ describe("async submissions", () => {
       async: true,
     });
     await sleep(50);
+    // Assert the precondition: without it a slow machine silently degrades this
+    // into a post-init cancel, and the buffering path goes untested.
+    const before = snapshot(await server.call("claude-result", { sessionId }));
+    assert.equal(before.status, "starting", "the turn has not initialized yet");
+
     const cancelled = snapshot(
       await server.call("claude-cancel", { sessionId }),
     );
@@ -208,6 +213,33 @@ describe("async submissions", () => {
     assert.match(result.error.message, /Unknown sessionId/);
     const cancel = await server.call("claude-cancel", { sessionId: "nope" });
     assert.match(cancel.error.message, /Unknown sessionId/);
+  });
+
+  test("claude-result(wait) answers about the turn it observed", async () => {
+    const submitted = snapshot(
+      await server.call("claude", { prompt: "seed", async: true }),
+    );
+    const { sessionId } = submitted;
+    await server.call("claude-result", { sessionId, wait: true });
+
+    // Both requests are dispatched before either can await, so the reply
+    // attaches a *new* turn while the wait is in flight. The wait was asked
+    // about the finished turn and must answer about that one.
+    const [waited, replied] = await Promise.all(
+      server.callInOneChunk([
+        { name: "claude-result", args: { sessionId, wait: true } },
+        {
+          name: "claude-reply",
+          args: { sessionId, prompt: "#work=300 follow-up", async: true },
+        },
+      ]),
+    );
+    const observed = snapshot(waited);
+    assert.equal(observed.done, true, "the finished turn is still done");
+    assert.equal(observed.status, "succeeded");
+    assert.equal(snapshot(replied).done, false, "the reply really did start");
+
+    await server.call("claude-result", { sessionId, wait: true });
   });
 
   test("sessions run in parallel without interfering", async () => {
