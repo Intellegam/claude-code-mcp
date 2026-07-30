@@ -332,7 +332,7 @@ async function handleToolCall(id, params) {
       // The submission answers with the sessionId, which only exists once the
       // turn is up (or has settled).
       await turn.readyPromise;
-      sendJson(id, engine.snapshotForSubmission(turn));
+      sendJson(id, engine.snapshotForSubmission(turn), call);
       return;
     }
 
@@ -349,11 +349,11 @@ async function handleToolCall(id, params) {
         call.cancelSignal,
       ]);
       if (outcome === CANCELLED) return;
-      sendJson(id, outcome);
+      sendJson(id, outcome, call);
       return;
     }
     if (name === "claude-cancel") {
-      sendJson(id, engine.cancel(args));
+      sendJson(id, engine.cancel(args), call);
       return;
     }
 
@@ -366,7 +366,7 @@ async function handleToolCall(id, params) {
     } else if (name === "claude-reply") {
       turn = engine.beginReply(args);
     } else {
-      sendError(id, -32602, `Unknown tool: ${name}`);
+      sendError(id, -32602, `Unknown tool: ${name}`, call);
       return;
     }
     call.turn = turn;
@@ -382,14 +382,17 @@ async function handleToolCall(id, params) {
         text: `\n[SESSION_ID: ${result.sessionId}]`,
       });
     }
-    sendResponse(id, { content });
+    sendResponse(id, { content }, call);
   } catch (e) {
     // A tool that failed is a *result*, not a JSON-RPC error: the model that
     // called it has to see why. Protocol errors are reserved for envelopes the
     // server could not act on at all.
-    sendToolFailure(id, e.message);
+    sendToolFailure(id, e.message, call);
   } finally {
-    liveCalls.delete(id);
+    // By identity, not by id: a client that cancelled this request may have
+    // reused the id while this handler was still settling, and the entry then
+    // belongs to the successor.
+    if (liveCalls.get(id) === call) liveCalls.delete(id);
   }
 }
 
@@ -397,26 +400,37 @@ async function handleToolCall(id, params) {
 // MCP JSON-RPC helpers
 // ---------------------------------------------------------------------------
 
-function sendResponse(id, result) {
-  if (liveCalls.get(id)?.cancelled) return; // cancelled requests get no reply
+/**
+ * Cancellation is judged against the call that *owns* the request, passed by
+ * the tool-call handler: looking the id up in `liveCalls` instead would consult
+ * a successor request when the client cancelled this one and reused its id —
+ * letting the old turn's result go out under the new request. Senders outside
+ * `handleToolCall` have no call and fall back to the map, where the entry (if
+ * any) is necessarily their own.
+ */
+function sendResponse(id, result, call = liveCalls.get(id)) {
+  if (call?.cancelled) return; // cancelled requests get no reply
   console.log(JSON.stringify({ jsonrpc: "2.0", id, result }));
 }
 
-function sendJson(id, payload) {
-  sendResponse(id, {
-    content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
-  });
+function sendJson(id, payload, call) {
+  sendResponse(
+    id,
+    { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] },
+    call,
+  );
 }
 
-function sendToolFailure(id, message) {
-  sendResponse(id, {
-    content: [{ type: "text", text: message }],
-    isError: true,
-  });
+function sendToolFailure(id, message, call) {
+  sendResponse(
+    id,
+    { content: [{ type: "text", text: message }], isError: true },
+    call,
+  );
 }
 
-function sendError(id, code, message) {
-  if (liveCalls.get(id)?.cancelled) return;
+function sendError(id, code, message, call = liveCalls.get(id)) {
+  if (call?.cancelled) return;
   console.log(
     JSON.stringify({ jsonrpc: "2.0", id: id ?? null, error: { code, message } }),
   );

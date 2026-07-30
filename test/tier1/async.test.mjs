@@ -393,6 +393,50 @@ describe("notifications/cancelled", () => {
 
     await assert.rejects(() => response, /timed out waiting for response/);
   });
+
+  test("a reused request id is not clobbered by its cancelled predecessor", async () => {
+    // Cancel a submission that is still settling, then reuse its id for a new
+    // long-poll: the predecessor must neither answer under the reused id when
+    // its turn settles nor delete the successor's `liveCalls` entry on the way
+    // out.
+    const work = snapshot(
+      await server.call("claude", {
+        prompt: "#work=900 keep going",
+        async: true,
+      }),
+    );
+    const first = server.beginCall("claude", { prompt: "#init=300 hi" }, 2500);
+    // Its waiter is replaced by the reuse below; only the timer remains.
+    first.response.catch(() => {});
+    await sleep(50);
+    server.send({
+      jsonrpc: "2.0",
+      method: "notifications/cancelled",
+      params: { requestId: first.id },
+    });
+    await sleep(50);
+
+    // The successor parks well past the predecessor's settle — a predecessor
+    // that still answers under this id resolves the long-poll with the wrong
+    // turn's result.
+    const final = snapshot(
+      await server.requestWithId(
+        first.id,
+        "tools/call",
+        {
+          name: "claude-result",
+          arguments: { sessionId: work.sessionId, wait: true },
+        },
+        3000,
+      ),
+    );
+    assert.equal(
+      final.status,
+      "succeeded",
+      "the successor's own answer, not the predecessor's",
+    );
+    assert.equal(final.sessionId, work.sessionId);
+  });
 });
 
 describe("the turn timeout", () => {
