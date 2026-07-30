@@ -301,6 +301,19 @@ describe("sessions", () => {
     assert.equal(engine._turns.size, 1, "only the latest turn is retained");
   });
 
+  test("turns that settle before reaching a session are not retained", async () => {
+    // All client-repeatable: an unbounded map is a denial of service.
+    const { engine, turn, runners } = await startedEngine();
+
+    await engine.submitStart({ prompt: "   " });
+    await engine.submitReply({ prompt: "no session id" });
+    await engine.submitReply({ sessionId: turn.sessionId, prompt: "collides" });
+    assert.equal(engine._turns.size, 1, "only the live turn is retained");
+
+    runners[0].result({ text: "ok" });
+    await settled(engine, turn.sessionId);
+  });
+
   test("shutdown settles live turns instead of leaving callers hanging", async () => {
     const { engine, turn, runners } = await startedEngine();
     const pending = assert.rejects(
