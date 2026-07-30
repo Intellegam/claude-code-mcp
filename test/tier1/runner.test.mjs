@@ -19,7 +19,7 @@ describe("result normalization", () => {
       type: "result",
       subtype: "error_during_execution",
       is_error: true,
-      errors: ["plain string", { message: "object error" }],
+      errors: ["plain string", { message: "object error" }, { code: 7 }],
     });
     assert.deepEqual(result.errors, ["plain string", "object error"]);
   });

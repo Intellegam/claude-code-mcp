@@ -11,9 +11,10 @@
  *   { text: "...", slow: 30 }             — streamed line by line, 30ms apart
  *   { tool: "Write", input: {...} }       — a tool call
  *
- * Every request is recorded in `calls`, including the `system` prompt, the
- * `messages` (which carry tool results from the previous step) and the tool
- * names offered to the model — that is how isolation is asserted.
+ * Every request is recorded, including the `system` prompt, the `messages`
+ * (which carry tool results from the previous step, and the project CLAUDE.md
+ * the CLI loads natively) and the tool names offered to the model — that is how
+ * isolation is asserted. `mainCalls()` returns the scripted turns.
  */
 
 import http from "node:http";
@@ -153,7 +154,6 @@ export function startMock({ turns = [], port = 0 } = {}) {
       const url = `http://127.0.0.1:${server.address().port}`;
       resolve({
         url,
-        calls,
         mainCalls: () => calls.filter((call) => call.isMainTurn),
         stop: () =>
           new Promise((done) => {

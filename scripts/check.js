@@ -10,24 +10,20 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const SKIP_DIRS = new Set(["node_modules", ".git", ".tmp"]);
 
-function collect(dir) {
-  const files = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name.startsWith(".") && entry.name !== ".") continue;
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (SKIP_DIRS.has(entry.name)) continue;
-      files.push(...collect(full));
-    } else if (/\.(js|mjs)$/.test(entry.name)) {
-      files.push(full);
-    }
-  }
-  return files;
-}
-
-const files = collect(ROOT).sort();
+const files = fs
+  .readdirSync(ROOT, { recursive: true, withFileTypes: true })
+  .filter(
+    (entry) =>
+      entry.isFile() &&
+      /\.(js|mjs)$/.test(entry.name) &&
+      !path
+        .relative(ROOT, entry.parentPath ?? entry.path)
+        .split(path.sep)
+        .some((segment) => segment === "node_modules" || segment.startsWith(".")),
+  )
+  .map((entry) => path.join(entry.parentPath ?? entry.path, entry.name))
+  .sort();
 let failed = 0;
 
 for (const file of files) {
