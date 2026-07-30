@@ -69,8 +69,8 @@ claude({ prompt: "Fix the failing test in tests/test_auth.py", cwd: "/repo", wri
 Parameters: `prompt` (required), `cwd`, `writable` (default false), `async`
 (default false).
 
-Pass `cwd` — it is the repo Claude reads, and the repo's root `CLAUDE.md` is
-injected into the system prompt from there.
+Pass `cwd` — it is the repo Claude reads, and the CLI loads that repo's own
+configuration and `CLAUDE.md` from there.
 
 ### `claude-reply` — continue a session
 
@@ -148,9 +148,12 @@ runs without permission prompts — scope it explicitly in the prompt.
 Read-only restricts *mutation through built-in tools*, not visibility: the agent
 can read outside `cwd`, and MCP tools stay available and may have side effects.
 
-The one thing always denied is an **agent-bridge MCP server** — any tool matching
-`mcp__codex*` or `mcp__claude[-_]code*` — because a consulted Claude calling
-Codex back would close a Codex → Claude → Codex loop.
+The one thing always denied is an **agent-bridge MCP server** — any tool whose
+server segment is `codex` or `claude`, with or without a `-code`/`-agent`/`-mcp`
+decoration (`mcp__codex__*`, `mcp__codex-agent__*`, `mcp__claude-code-mcp__*`, …)
+— because a consulted Claude calling Codex back would close a
+Codex → Claude → Codex loop. An unrelated server that merely starts with one of
+those words (`mcp__codexdb__*`) is not affected.
 
 The child's environment is your environment minus `CLAUDECODE` and
 `CLAUDE_CODE_*` (nested-session markers that change CLI behaviour;
@@ -158,12 +161,10 @@ The child's environment is your environment minus `CLAUDECODE` and
 
 ## Configuration
 
-| Environment variable            | Default            | Description                                        |
-| ------------------------------- | ------------------ | -------------------------------------------------- |
-| `CLAUDE_TIMEOUT_MS`             | `1800000` (30 min) | Maximum time for one turn                          |
-| `CLAUDE_CANCEL_WATCHDOG_MS`     | `30000` (30s)      | How long to wait after an interrupt before forcing  |
-| `CLAUDE_CODE_MCP_QUERY_MODULE`  | —                  | Test hook: module exporting a `query()` to use      |
-| `CLAUDE_CODE_MCP_TEST_BASE_URL` | —                  | Test hook: `ANTHROPIC_BASE_URL` for the child       |
+| Environment variable        | Default            | Description                                        |
+| --------------------------- | ------------------ | -------------------------------------------------- |
+| `CLAUDE_TIMEOUT_MS`         | `1800000` (30 min) | Maximum time for one turn                          |
+| `CLAUDE_CANCEL_WATCHDOG_MS` | `30000` (30s)      | How long to wait after an interrupt before forcing  |
 
 ## Development
 

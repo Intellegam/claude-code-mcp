@@ -23,8 +23,8 @@ server.js            MCP protocol layer, tool schemas, dispatch, shutdown
 lib/engine.js        turns, sessions, guards, watchdogs (ported from codex-mcp)
 lib/claude-runner.js SDK adapter — one runner per turn
 lib/isolation.js     env denylist, tool disallow lists, bridge-deny hook
-test/tier1/engine    in-process engine tests via the createRunner seam
-test/tier1/          fast tests, SDK query() mocked
+test/tier1/          fast tests, SDK query() mocked; engine.test.mjs drives the
+                     engine in-process through the createRunner seam
 test/tier2/          integration: real CLI against a mock Anthropic API
 test/helpers/        harness, mock query, mock API, sandbox + startTier2
 ```
@@ -42,11 +42,9 @@ test/helpers/        harness, mock query, mock API, sandbox + startTier2
 - **Resume is keyed by session id *and* cwd.** A different cwd is a hard failure,
   not a new session. The engine adopts whatever id `system/init` reports, even
   when it differs from the one being resumed.
-- **`canUseTool` is dead weight under `bypassPermissions`** — the SDK
-  auto-approves before consulting it, which is the writable mode this wrapper
-  uses. The single authorization gate is the `PreToolUse` hook in
-  `lib/isolation.js`; extend it there rather than bolting exceptions onto
-  `disallowedTools`.
+- **The single authorization gate is the `PreToolUse` hook in
+  `lib/isolation.js`**, not `canUseTool`. Extend it there rather than bolting
+  exceptions onto `disallowedTools`; the reasoning is in that file.
 - **A consultation runs as the operator's own Claude Code.** `settingSources` is
   unset on purpose: user + project + local config all load. The only always-deny
   is an agent-bridge MCP server (recursion guard).

@@ -29,8 +29,6 @@ only once the turn has settled.
 > then never be cancelled. This is the single most important mechanic in the
 > file.
 
-Turn state inside the runner: `starting → initialized → running → terminal`.
-
 - **`system/init`** marks initialization and carries the session id. It is
   emitted once per *turn*, not per session. The id it reports is authoritative:
   the engine adopts it even when it differs from the id being resumed.
@@ -106,8 +104,10 @@ serve it:
 - **Agent-bridge MCP servers.** The operator's plugins almost certainly include
   one — codex-mcp is what calls *this* server — and a consulted Claude that can
   call Codex back closes a recursion loop. Tool names matching
-  `/^mcp__(codex|claude[-_]?code)/i` are denied in both permission modes; every
-  other MCP tool is allowed.
+  `/^mcp__(codex|claude)(?:[-_](?:code|agent|mcp))*__/i` are denied in both
+  permission modes; every other MCP tool is allowed. The trailing `__` matters:
+  the whole server segment has to be a bridge name, so `mcp__codexdb__*` and
+  `mcp__claude-agent-inbox__*` are not caught by it.
 
 ### Permission levels
 
