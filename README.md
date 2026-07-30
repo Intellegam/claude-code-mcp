@@ -78,6 +78,9 @@ configuration and `CLAUDE.md` from there.
 claude-reply({ sessionId: "e0dbaa09-…", prompt: "What about the timeout path?", cwd: "/path/to/repo" })
 ```
 
+Parameters: `sessionId` (required), `prompt` (required), `cwd`, `async` (default
+false).
+
 Resume is keyed by session id **and** cwd, so pass the same `cwd` the session was
 created with — always, if the server may have restarted. A mismatch fails with a
 message telling you which cwd was tried.
@@ -148,12 +151,10 @@ runs without permission prompts — scope it explicitly in the prompt.
 Read-only restricts *mutation through built-in tools*, not visibility: the agent
 can read outside `cwd`, and MCP tools stay available and may have side effects.
 
-The one thing always denied is an **agent-bridge MCP server** — any tool whose
-server segment is `codex` or `claude`, with or without a `-code`/`-agent`/`-mcp`
-decoration (`mcp__codex__*`, `mcp__codex-agent__*`, `mcp__claude-code-mcp__*`, …)
-— because a consulted Claude calling Codex back would close a
-Codex → Claude → Codex loop. An unrelated server that merely starts with one of
-those words (`mcp__codexdb__*`) is not affected.
+The one thing always denied is an **agent-bridge MCP server**
+(`mcp__codex__*`, `mcp__codex-agent__*`, `mcp__claude-code-mcp__*`, …) — because
+a consulted Claude calling Codex back would close a Codex → Claude → Codex loop.
+The exact matching rule is in DESIGN.md → Trust model.
 
 The child's environment is your environment minus `CLAUDECODE` and
 `CLAUDE_CODE_*` (nested-session markers that change CLI behaviour;

@@ -124,6 +124,13 @@ in the caller's repo — not delegation, not scheduled or backgrounded execution
 not moving the session to another working directory (which would also break
 cwd-keyed resume), and not messaging.
 
+`Monitor` and `REPL` are on the read-only list for the same reason as `Bash`:
+Monitor's own guidance is to run `until <check>; do sleep 2; done`, and REPL
+evaluates JavaScript, so blocking `Bash` alone would not make the session
+read-only. Both lists are the tool surface as it actually exists at 0.3.220, and
+the tier-2 drift guard pins that surface so the next SDK bump has to be looked
+at.
+
 *Verified:* `disallowedTools` removes tools from the schema entirely rather than
 denying at call time; it propagates to subagents and beats on-disk allow rules,
 including a project `permissions.allow`. `allowedTools` is deliberately left
@@ -143,15 +150,6 @@ mode, and its denies bypass `canUseTool` entirely, so it is the only gate.
 The hook also *allows* non-bridge `mcp__*` tools: read-only mode sets no
 `permissionMode`, and without an explicit allow the CLI leaves every MCP tool
 stuck on an ungranted permission request.
-
-> **Deviation from the original spec.** The spec's read-only list was
-> `[Write, Edit, NotebookEdit, Bash, Task]`. Probing the 0.3.220 tool surface
-> showed that leaves `Monitor` and `REPL` — whose own guidance is to run
-> `until <check>; do sleep 2; done` and to evaluate JavaScript, i.e. shell
-> bypasses — plus a set of delegation/scheduling/messaging tools that the spec's
-> intent ("no writes, no shell, no subagents") clearly excludes. The list above
-> is the spec's intent applied to the tool surface that actually exists; the
-> tier-2 drift guard pins that surface so the next SDK bump has to be looked at.
 
 ## Known limitations
 

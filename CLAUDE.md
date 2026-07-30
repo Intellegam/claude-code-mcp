@@ -10,7 +10,8 @@ You MUST read the following files for more information:
 
 ## Overview
 
-- **Language**: Node.js, ESM (`"type": "module"`), Node >= 18
+- **Language**: Node.js, ESM (`"type": "module"`), Node >= 20.11 (`--test-timeout`
+  in the tier-2 script)
 - **Protocol**: MCP JSON-RPC over stdio → Claude Agent SDK → Claude Code CLI
 - **Dependency**: `@anthropic-ai/claude-agent-sdk`, pinned **exactly** (no
   caret). The runner depends on observed SDK behaviour, not documented API — a
@@ -26,8 +27,14 @@ lib/isolation.js     env denylist, tool disallow lists, bridge-deny hook
 test/tier1/          fast tests, SDK query() mocked; engine.test.mjs drives the
                      engine in-process through the createRunner seam
 test/tier2/          integration: real CLI against a mock Anthropic API
+test/smoke.js        tier 3: real model, opt-in via CLAUDE_CODE_MCP_SMOKE=1
 test/helpers/        harness, mock query, mock API, sandbox + startTier2
 ```
+
+Test seams (read from the *server's* env, never from tool arguments):
+`CLAUDE_CODE_MCP_QUERY_MODULE` swaps in a scripted `query()` (tier 1);
+`CLAUDE_CODE_MCP_TEST_BASE_URL` points the child at the mock API by re-adding
+`ANTHROPIC_BASE_URL`, always with a dummy key (tier 2).
 
 ## Things that will bite you
 
@@ -56,15 +63,33 @@ test/helpers/        harness, mock query, mock API, sandbox + startTier2
 
 ## Commands
 
-```bash
-npm test                  # tier 1 (fast, no child process)
-npm run test:integration  # tier 2 (real CLI, mock API) — must pass before release
-npm run check             # node --check over the sources
-node test/send.js claude "prompt"
-```
+### Run
+
+- `npm start` - start the server on stdio (an MCP client normally does this)
+- `node test/send.js claude "prompt"` - send one tool call by hand (`--async`,
+  `--writable`; also `claude-reply <sessionId> "prompt"`,
+  `claude-result <sessionId> [--wait]`, `claude-cancel <sessionId>`)
+
+### Required Checks
+
+- Lint: `npm run check` (`node --check` over `server.js` and `lib/*.js`)
+- Test: `npm test` (tier 1 — fast, SDK `query()` mocked, no child process)
+- Integration test: `npm run test:integration` (tier 2 — real CLI against the
+  mock Anthropic API; must pass before release)
+
+### Situational Checks
+
+- `lib/claude-runner.js` or `lib/isolation.js` changed, or the
+  `@anthropic-ai/claude-agent-sdk` pin bumped →
+  `CLAUDE_CODE_MCP_SMOKE=1 npm run test:smoke` (tier 3, real model, costs tokens)
+
+### Review Inputs
+
+- Architecture, SDK mechanics, trust model: `DESIGN.md`
 
 ## Releasing
 
 1. Bump `version` in `package.json` and `VERSION` in `server.js` (keep in sync).
 2. `git tag v{version}`.
-3. Update the consumer's pin (e.g. a `#v{version}` ref in a plugin's config).
+3. Update the `~/.codex/config.toml` entry if it pins a tag — the documented
+   snippet does not.
