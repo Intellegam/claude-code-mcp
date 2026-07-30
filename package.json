@@ -10,8 +10,8 @@
   "scripts": {
     "start": "node server.js",
     "check": "node scripts/check.js",
-    "test": "node --test test/tier1/",
-    "test:integration": "node --test --test-timeout=180000 test/tier2/",
+    "test": "node --test \"test/tier1/*.test.mjs\"",
+    "test:integration": "node --test --test-concurrency=1 --test-timeout=240000 \"test/tier2/*.test.mjs\"",
     "test:smoke": "node test/smoke.js",
     "send": "node test/send.js"
   },
