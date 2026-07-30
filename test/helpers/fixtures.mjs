@@ -21,6 +21,15 @@ import { spawnServer } from "./harness.mjs";
 export const PROJECT_MARKER = "MARKER-PROJECT-XYZZY-42";
 export const USER_MARKER = "MARKER-USER-PLUGH-99";
 
+/**
+ * A scripted turn that takes ~15s: 500 lines, 30ms apart. Long enough that a
+ * turn which settles in a couple of seconds can only have been stopped.
+ */
+export const LONG_STREAM = {
+  text: Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join("\n"),
+  slow: 30,
+};
+
 /** Benign MCP servers, one per scope: their tools are available by design. */
 export const USER_MCP_TOOL = "mcp__usertool__user_ping";
 export const REPO_MCP_TOOL = "mcp__repotool__repo_ping";

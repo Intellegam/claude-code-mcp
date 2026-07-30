@@ -8,12 +8,7 @@
 import test, { after, before, describe } from "node:test";
 import assert from "node:assert/strict";
 import { sessionIdFrom, snapshot, sleep } from "../helpers/harness.mjs";
-import { startTier2 } from "../helpers/fixtures.mjs";
-
-const LONG_STREAM = {
-  text: Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join("\n"),
-  slow: 30,
-};
+import { LONG_STREAM, startTier2 } from "../helpers/fixtures.mjs";
 
 const CANCEL_ENV = { CLAUDE_CANCEL_WATCHDOG_MS: "30000" };
 
@@ -85,7 +80,8 @@ describe("cancelling before the turn is up", () => {
 
     // The reply's session id is known before the CLI has even started, so this
     // cancel lands in the pre-init window where interrupt() is a no-op.
-    const pending = ctx.server.callAsyncPending(
+    // Deliberately not awaited: `call()` has already written the request.
+    const pending = ctx.server.call(
       "claude-reply",
       {
         sessionId,
