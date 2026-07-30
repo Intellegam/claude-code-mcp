@@ -42,7 +42,7 @@ const INSTRUCTIONS = [
   "`claude` defaults to read-only (no writes, no shell, no subagents); `writable: true` allows file writes and commands and must be explicitly scoped in the prompt.",
   "`async: true` on `claude` and `claude-reply` returns a sessionId immediately instead of blocking; poll with `claude-result` (use `wait: true` to block until done) and stop with `claude-cancel`.",
   "Session IDs work across `claude-reply`, `claude-result`, and `claude-cancel`.",
-  "Pass `cwd` (repo root) so Claude reads the right project — the repo's CLAUDE.md is injected automatically.",
+  "Pass `cwd` (repo root) so Claude reads the right project — the CLI loads that repo's own configuration and memory from there.",
 ].join(" ");
 
 const TOOLS = [
@@ -126,7 +126,9 @@ const mcpRl = readline.createInterface({
 const inFlight = new Set();
 
 mcpRl.on("line", (line) => {
-  const pending = handleLine(line);
+  // Swallow first, track second: an unhandled rejection from this derived
+  // promise would take the process down, and shutdown awaits these.
+  const pending = handleLine(line).catch(() => {});
   inFlight.add(pending);
   pending.finally(() => inFlight.delete(pending));
 });
