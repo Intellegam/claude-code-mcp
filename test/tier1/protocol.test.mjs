@@ -129,6 +129,14 @@ describe("JSON-RPC envelopes", () => {
     assert.equal(batch.id, null);
   });
 
+  test("a request with an explicit null id is answered on id null", async () => {
+    const take = record();
+    await feed(`${JSON.stringify({ jsonrpc: "2.0", id: null, method: "ping" })}\n`);
+    const [response] = await take({ min: 1 });
+    assert.deepEqual(response.result, {});
+    assert.equal(response.id, null, "null id is echoed, not dropped");
+  });
+
   test("a request method sent without an id gets no response", async () => {
     const take = record();
     server.send({ jsonrpc: "2.0", method: "tools/list", params: {} });

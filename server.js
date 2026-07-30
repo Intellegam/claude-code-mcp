@@ -209,15 +209,18 @@ async function handleLine(line) {
     return;
   }
 
-  const id = message.id === null ? undefined : message.id;
+  // Classification is by id *presence* (own property), per JSON-RPC: a request
+  // may carry id null, and null must be echoed back — not treated as absent.
+  const hasId = Object.hasOwn(message, "id");
+  const id = message.id;
   const method = typeof message.method === "string" ? message.method : null;
   if (message.jsonrpc !== "2.0" || !method) {
-    sendError(id ?? null, -32600, "Invalid Request");
+    sendError(hasId ? id : null, -32600, "Invalid Request");
     return;
   }
 
   if (method.startsWith("notifications/") || method === "initialized") {
-    if (id !== undefined) {
+    if (hasId) {
       sendError(id, -32600, `${method} is a notification and must have no id`);
       return;
     }
@@ -226,7 +229,7 @@ async function handleLine(line) {
   }
   // A request method sent without an id is a notification: there is nothing to
   // answer, and starting a turn nobody can collect would only leak one.
-  if (id === undefined) return;
+  if (!hasId) return;
 
   try {
     switch (method) {
