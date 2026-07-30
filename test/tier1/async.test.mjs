@@ -283,6 +283,40 @@ describe("notifications/cancelled", () => {
     );
   });
 
+  test("reaches an async submission that never reached init", async () => {
+    // Same window, other path. The submission response is what carries the
+    // sessionId, so a cancel landing before it leaves the client with no handle
+    // at all — a turn left running here could never be reached by
+    // `claude-cancel`, and would burn the full turn timeout.
+    const seeded = await server.call("claude", { prompt: "seed" });
+    const sessionId = sessionIdFrom(seeded);
+
+    const { id, response } = server.beginCall(
+      "claude-reply",
+      { sessionId, prompt: "#init=6000 stalled startup", async: true },
+      3000,
+    );
+    await sleep(50);
+    const before = snapshot(await server.call("claude-result", { sessionId }));
+    assert.equal(before.status, "starting", "the turn has not initialized yet");
+
+    server.send({
+      jsonrpc: "2.0",
+      method: "notifications/cancelled",
+      params: { requestId: id, reason: "the client went away" },
+    });
+
+    const started = Date.now();
+    const final = snapshot(
+      await server.call("claude-result", { sessionId, wait: true }),
+    );
+    assert.equal(final.status, "cancelled");
+    assert.equal(final.error.source, "cancel", "the watchdog forced it");
+    assert.ok(Date.now() - started < 4000, "not held to the 8s turn timeout");
+
+    await assert.rejects(() => response, /timed out waiting for response/);
+  });
+
   test("reaches a turn that never reached init", async () => {
     // The sync handler has to hold the turn from the first tick. A child that
     // stalls before `system/init` has no session id yet — nothing a cancel

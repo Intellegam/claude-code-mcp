@@ -128,10 +128,14 @@ const inFlight = new Set();
 /**
  * Live `tools/call` requests, by JSON-RPC id, so `notifications/cancelled` can
  * reach them: `cancelled` suppresses the response (per MCP the server should
- * not answer a cancelled request), and `turn` — set only for the *synchronous*
- * calls, where request and turn have the same lifetime — is the turn to stop.
- * An async submission is cancelled through `claude-cancel` instead; killing it
- * here would strand a session whose id the client never received.
+ * not answer a cancelled request), and `turn` — attached for every submission,
+ * synchronous or async — is the turn to stop.
+ *
+ * Stopping it is correct for exactly as long as the entry exists, which is
+ * until the response is sent: a cancel landing in that window leaves the client
+ * without the sessionId, so a turn left running could never be reached again.
+ * Afterwards the entry is gone (the `finally` in `handleToolCall`), a late
+ * cancel is a no-op, and `claude-cancel` is the only way to stop an async turn.
  *
  * `cancelSignal` is the other half: a handler waiting on a turn it may not stop
  * (`claude-result wait: true`) has to be released some other way, or it holds
@@ -306,10 +310,17 @@ async function handleToolCall(id, params) {
   try {
     // --- Async submissions ---
     if ((name === "claude" || name === "claude-reply") && args.async) {
+      // Attached before the wait for `system/init`, and stopped here on
+      // purpose: a cancel can only land while the response is still owed, which
+      // is exactly when the client has no sessionId yet. A turn left running
+      // then could never be reached again.
       const turn =
-        name === "claude"
-          ? await engine.submitStart(args)
-          : await engine.submitReply(args);
+        name === "claude" ? engine.beginStart(args) : engine.beginReply(args);
+      call.turn = turn;
+      if (call.cancelled) cancelTurn(turn);
+      // The submission answers with the sessionId, which only exists once the
+      // turn is up (or has settled).
+      await turn.readyPromise;
       sendJson(id, engine.snapshotForSubmission(turn));
       return;
     }
