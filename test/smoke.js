@@ -92,6 +92,39 @@ const assert = (condition, message) => {
 const snapshot = (response) => JSON.parse(response.result.content[0].text);
 const text = (response) =>
   (response.result?.content ?? []).map((block) => block.text).join("\n");
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * A throwaway repo to run a scenario in, so nothing lands in this one and the
+ * scenario controls the configuration Claude Code loads.
+ */
+function sandbox() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccmcp-smoke-"));
+  fs.mkdirSync(path.join(dir, ".claude"));
+  return dir;
+}
+
+/**
+ * Source for an MCP server whose single tool records that it ran. A denial has
+ * to be provable, not inferred from what the model says about it.
+ */
+function tattlingMcpServer(toolName, sentinel) {
+  return `import fs from 'node:fs';
+import readline from 'node:readline';
+const send = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+  let m; try { m = JSON.parse(line); } catch { return; }
+  if (m.method === 'initialize')
+    send({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'smoke', version: '0.0.1' } } });
+  else if (m.method === 'tools/list')
+    send({ jsonrpc: '2.0', id: m.id, result: { tools: [{ name: ${JSON.stringify(toolName)}, description: 'Ask the other agent for a second opinion.', inputSchema: { type: 'object', properties: { prompt: { type: 'string' } } } }] } });
+  else if (m.method === 'tools/call') {
+    fs.writeFileSync(${JSON.stringify(sentinel)}, 'ran');
+    send({ jsonrpc: '2.0', id: m.id, result: { content: [{ type: 'text', text: 'THE-BRIDGE-ANSWERED' }] } });
+  } else if (m.id !== undefined) send({ jsonrpc: '2.0', id: m.id, result: {} });
+});
+`;
+}
 
 const mcp = client();
 await mcp.request("initialize", {});
@@ -123,20 +156,69 @@ await scenario("a follow-up remembers the conversation", async () => {
 });
 
 await scenario("read-only mode refuses to write", async () => {
-  const response = await mcp.call("claude", {
-    prompt:
-      "Create a file called smoke-should-not-exist.txt in the current directory with the text 'nope'. If you cannot, say NO_WRITE_TOOL.",
-    cwd: REPO_ROOT,
-  });
-  assert(!response.error, response.error?.message);
-  assert(
-    !fs.existsSync(path.join(REPO_ROOT, "smoke-should-not-exist.txt")),
-    "a file was written in read-only mode",
-  );
+  // A throwaway cwd: a scenario that writes into the repo it is testing has to
+  // be cleaned up, and a failure would leave the file behind.
+  const dir = sandbox();
+  try {
+    const response = await mcp.call("claude", {
+      prompt:
+        "Create a file called smoke-should-not-exist.txt in the current directory with the text 'nope'. If you cannot, say NO_WRITE_TOOL.",
+      cwd: dir,
+    });
+    assert(!response.error, response.error?.message);
+    assert(
+      !fs.existsSync(path.join(dir, "smoke-should-not-exist.txt")),
+      "a file was written in read-only mode",
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await scenario("an agent-bridge MCP server is denied in both modes", async () => {
+  const dir = sandbox();
+  const server = path.join(dir, "bridge-mcp.mjs");
+  const sentinel = path.join(dir, "bridge-ran");
+  try {
+    fs.writeFileSync(server, tattlingMcpServer("consult", sentinel));
+    fs.writeFileSync(
+      path.join(dir, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          "codex-agent": { command: process.execPath, args: [server] },
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(dir, ".claude", "settings.json"),
+      JSON.stringify({ enableAllProjectMcpServers: true }),
+    );
+
+    for (const writable of [false, true]) {
+      const response = await mcp.call("claude", {
+        prompt:
+          "Call the codex-agent MCP tool `consult` with the prompt 'hello'. " +
+          "If the tool call is refused or the tool is unavailable, reply with exactly BRIDGE_DENIED.",
+        cwd: dir,
+        writable,
+      });
+      assert(!response.error, response.error?.message);
+      assert(
+        !fs.existsSync(sentinel),
+        `the bridge server ran (writable=${writable})`,
+      );
+      assert(
+        /BRIDGE_DENIED/.test(text(response)),
+        `no denial reported (writable=${writable}): ${text(response)}`,
+      );
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 await scenario("writable mode can write inside the given cwd", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccmcp-smoke-"));
+  const dir = sandbox();
   try {
     const response = await mcp.call("claude", {
       prompt: "Create a file named ok.txt containing exactly: hello",
@@ -154,25 +236,36 @@ await scenario("async submit, then cancel", async () => {
   const submitted = snapshot(
     await mcp.call("claude", {
       prompt:
-        "Read every file in this repository and write an exhaustive review of each one.",
+        "Read every file in this repository and write an exhaustive review of each one, " +
+        "one file at a time. Do not stop until every file is covered.",
       cwd: REPO_ROOT,
       async: true,
     }),
   );
   assert(submitted.sessionId, "no sessionId from the async submission");
   assert(!submitted.done, "turn finished before it could be cancelled");
-  await new Promise((resolve) => setTimeout(resolve, 4000));
-  await mcp.call("claude-cancel", { sessionId: submitted.sessionId });
+  await sleep(4000);
+
+  const cancelled = snapshot(
+    await mcp.call("claude-cancel", { sessionId: submitted.sessionId }),
+  );
+  // A turn that had already finished proves nothing about interrupts; the
+  // scenario has to be re-run rather than pass on the wrong evidence.
+  assert(!cancelled.done, "the turn finished before the cancel was sent");
+
+  const started = Date.now();
   const final = snapshot(
     await mcp.call("claude-result", {
       sessionId: submitted.sessionId,
       wait: true,
     }),
   );
+  const elapsed = Date.now() - started;
   assert(
-    final.status === "cancelled" || final.status === "succeeded",
-    `unexpected terminal status ${final.status}`,
+    final.status === "cancelled",
+    `expected cancelled, got ${final.status}`,
   );
+  assert(elapsed < 60000, `the interrupt took ${Math.round(elapsed / 1000)}s`);
 });
 
 mcp.close();
