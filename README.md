@@ -17,7 +17,7 @@ semantics.
 
 ## Prerequisites
 
-- Node.js 18 or higher
+- Node.js 20.11 or higher
 - Working Claude Code authentication (an `ANTHROPIC_API_KEY` or
   `CLAUDE_CODE_OAUTH_TOKEN` in the environment, or a host already logged in via
   Claude Code — the credentials in `~/.claude` are reachable because the child
