@@ -151,6 +151,18 @@ export function spawnServer({ env = {}, cwd = REPO_ROOT, useMockQuery = true } =
     },
 
     /**
+     * Send a request under a caller-chosen id.
+     *
+     * For reusing the id of a request the client has already cancelled: that
+     * request is no longer in flight, so the id is free again — and a server
+     * still holding it would silently drop the answer.
+     */
+    requestWithId(id, method, params, timeoutMs) {
+      send({ jsonrpc: "2.0", id, method, params });
+      return waitFor(id, timeoutMs);
+    },
+
+    /**
      * Write several tool calls in a *single* stdin chunk, so the server's line
      * handler starts them all before any of them can await. That is what makes
      * ordering races between two requests reproducible.

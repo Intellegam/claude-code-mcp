@@ -87,6 +87,37 @@ describe("child environment denylist", () => {
     assert.equal(env.ANTHROPIC_AUTH_TOKEN, undefined);
     assert.equal(env.ANTHROPIC_CUSTOM_HEADERS, undefined);
   });
+
+  test("the test hook leaves no other way to reach a real backend", () => {
+    // The prefix exceptions survive the denylist and each one bypasses the test
+    // endpoint: the OAuth token is a live credential, and the Bedrock/Vertex
+    // switches make the CLI ignore ANTHROPIC_BASE_URL entirely. Case-insensitive
+    // for the same Windows reason as the denylist — `env` keeps the parent's
+    // casing, so an upper-case-only delete would miss `Claude_Code_Oauth_Token`.
+    const env = buildChildEnv({
+      PATH: "/usr/bin",
+      Claude_Code_Oauth_Token: "oauth-token",
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      claude_code_use_vertex: "1",
+      Anthropic_Api_Key: "sk-ant-real",
+      CLAUDE_CODE_MCP_TEST_BASE_URL: "http://127.0.0.1:9999",
+    });
+    for (const key of Object.keys(env)) {
+      assert.ok(
+        !/^CLAUDE_CODE_(OAUTH_TOKEN|USE_BEDROCK|USE_VERTEX)$/.test(
+          key.toUpperCase(),
+        ),
+        `${key} must not reach a child pointed at the test endpoint`,
+      );
+    }
+    assert.equal(env.ANTHROPIC_BASE_URL, "http://127.0.0.1:9999");
+    assert.equal(
+      env.Anthropic_Api_Key,
+      undefined,
+      "a real key must not sit beside the dummy key",
+    );
+    assert.equal(env.ANTHROPIC_API_KEY, "sk-ant-mcp-test", "only the dummy key");
+  });
 });
 
 describe("query options", () => {

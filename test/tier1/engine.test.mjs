@@ -210,6 +210,68 @@ describe("terminal-state precedence", () => {
   });
 });
 
+describe("cancelling a turn that has not initialized", () => {
+  /** An engine whose runner never emits `system/init`. */
+  function stalledEngine(engineOptions = {}) {
+    const createRunner = fakeRunners(() => {}); // no init, no result, ever
+    const engine = createEngine({
+      createRunner,
+      timeoutMs: 60_000,
+      cancelWatchdogMs: 20,
+      ...engineOptions,
+    });
+    return { engine, runners: createRunner.created };
+  }
+
+  test("beginStart hands back the turn before init", () => {
+    const { engine, runners } = stalledEngine();
+    const turn = engine.beginStart({ prompt: "hello", cwd: "/repo" });
+
+    assert.equal(turn.sessionId, null, "no session until system/init");
+    assert.equal(turn.status, "starting");
+    assert.equal(runners.length, 1, "the runner is already started");
+  });
+
+  test("cancelTurn reaches a turn no sessionId could find", async () => {
+    // The MCP layer's case: a client cancels its request while the child is
+    // still starting up. `cancel({sessionId})` has nothing to look up, so
+    // without a turn-reference cancel the turn would run to its full timeout.
+    const { engine, runners } = stalledEngine();
+    const turn = engine.beginStart({ prompt: "hello", cwd: "/repo" });
+
+    engine.cancelTurn(turn);
+    assert.equal(turn.cancelRequested, true);
+    assert.equal(turn.status, "cancelling");
+    assert.equal(runners[0].interrupts, 1);
+
+    // The interrupt is buffered until init that never comes; the watchdog is
+    // what bounds the wait.
+    const keepAlive = setInterval(() => {}, 5);
+    try {
+      await turn.donePromise;
+    } finally {
+      clearInterval(keepAlive);
+    }
+    assert.equal(turn.status, "cancelled");
+    assert.equal(runners[0].closed, true, "the force path reaps the child");
+  });
+
+  test("cancelTurn without a turn is a no-op", () => {
+    const { engine } = stalledEngine();
+    assert.equal(engine.cancelTurn(null), null);
+    assert.equal(engine.cancelTurn(undefined), null);
+  });
+
+  test("beginReply is the same, and still claims the session", () => {
+    const { engine } = stalledEngine();
+    const turn = engine.beginReply({ sessionId: "s-1", prompt: "again" });
+
+    assert.equal(turn.sessionId, "s-1");
+    engine.cancelTurn(turn);
+    assert.equal(turn.cancelRequested, true);
+  });
+});
+
 describe("sessions", () => {
   test("a failed sync turn keeps the sessionId in its error", async () => {
     const createRunner = fakeRunners((runner, index) => {

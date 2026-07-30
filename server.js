@@ -132,6 +132,10 @@ const inFlight = new Set();
  * calls, where request and turn have the same lifetime — is the turn to stop.
  * An async submission is cancelled through `claude-cancel` instead; killing it
  * here would strand a session whose id the client never received.
+ *
+ * `cancelSignal` is the other half: a handler waiting on a turn it may not stop
+ * (`claude-result wait: true`) has to be released some other way, or it holds
+ * the request until that turn finishes.
  */
 const liveCalls = new Map();
 
@@ -270,22 +274,33 @@ function handleNotification(method, params) {
   const call = liveCalls.get(params?.requestId);
   if (!call) return;
   call.cancelled = true;
+  call.signalCancel();
   cancelTurn(call.turn);
 }
 
 function cancelTurn(turn) {
-  if (!turn?.sessionId) return;
+  if (!turn) return;
   try {
-    engine.cancel({ sessionId: turn.sessionId });
+    // By reference, not by session: a turn that has not reached `system/init`
+    // has no sessionId to look up yet.
+    engine.cancelTurn(turn);
   } catch {
-    // The session is already gone; nothing to stop.
+    // The turn is already gone; nothing to stop.
   }
 }
+
+/** What `cancelSignal` resolves to, so it is distinguishable from a result. */
+const CANCELLED = Symbol("cancelled");
 
 async function handleToolCall(id, params) {
   const name = params?.name;
   const args = params?.arguments ?? {};
   const call = { cancelled: false, turn: null };
+  // Resolved by `notifications/cancelled`, so a handler parked on a turn it is
+  // no longer allowed to answer can stop waiting.
+  call.cancelSignal = new Promise((resolve) => {
+    call.signalCancel = () => resolve(CANCELLED);
+  });
   liveCalls.set(id, call);
 
   try {
@@ -301,7 +316,18 @@ async function handleToolCall(id, params) {
 
     // --- Session tools ---
     if (name === "claude-result") {
-      sendJson(id, await engine.result(args));
+      // `wait: true` parks until the turn settles — up to the full turn
+      // timeout. A cancelled request may no longer be answered, so staying
+      // parked is pure retention: give up as soon as the cancel lands. The turn
+      // itself keeps running; an async turn is stopped through `claude-cancel`
+      // alone. `Promise.race` subscribes to the result either way, so a
+      // rejection arriving after the cancel won is still handled.
+      const outcome = await Promise.race([
+        engine.result(args),
+        call.cancelSignal,
+      ]);
+      if (outcome === CANCELLED) return;
+      sendJson(id, outcome);
       return;
     }
     if (name === "claude-cancel") {
@@ -310,18 +336,20 @@ async function handleToolCall(id, params) {
     }
 
     // --- Sync tool calls ---
+    // Not awaited: the turn record has to be reachable from the first tick, so
+    // a `notifications/cancelled` arriving before `system/init` can stop it.
     let turn;
     if (name === "claude") {
-      turn = await engine.submitStart(args);
+      turn = engine.beginStart(args);
     } else if (name === "claude-reply") {
-      turn = await engine.submitReply(args);
+      turn = engine.beginReply(args);
     } else {
       sendError(id, -32602, `Unknown tool: ${name}`);
       return;
     }
     call.turn = turn;
-    // A cancellation that arrived while the turn was starting up has no turn to
-    // stop yet; stop it now.
+    // Re-check: a cancellation that landed before the turn was attached found
+    // nothing to stop.
     if (call.cancelled) cancelTurn(turn);
 
     const result = await engine.awaitTurn(turn);

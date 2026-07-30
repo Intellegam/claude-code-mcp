@@ -282,6 +282,83 @@ describe("notifications/cancelled", () => {
       "the cancelled request was answered anyway",
     );
   });
+
+  test("reaches a turn that never reached init", async () => {
+    // The sync handler has to hold the turn from the first tick. A child that
+    // stalls before `system/init` has no session id yet — nothing a cancel
+    // could look up — so the turn would otherwise run to its full timeout. The
+    // cancel watchdog is what bounds it instead.
+    const seeded = await server.call("claude", { prompt: "seed" });
+    const sessionId = sessionIdFrom(seeded);
+
+    const { id, response } = server.beginCall(
+      "claude-reply",
+      { sessionId, prompt: "#init=6000 stalled startup" },
+      3000,
+    );
+    await sleep(50);
+    // Assert the precondition: on a slow machine this would otherwise quietly
+    // become a post-init cancel and stop testing the pre-init path.
+    const before = snapshot(await server.call("claude-result", { sessionId }));
+    assert.equal(before.status, "starting", "the turn has not initialized yet");
+
+    server.send({
+      jsonrpc: "2.0",
+      method: "notifications/cancelled",
+      params: { requestId: id, reason: "the client went away" },
+    });
+
+    const started = Date.now();
+    const final = snapshot(
+      await server.call("claude-result", { sessionId, wait: true }),
+    );
+    assert.equal(final.status, "cancelled");
+    assert.equal(final.error.source, "cancel", "the watchdog forced it");
+    assert.ok(Date.now() - started < 4000, "not held to the 8s turn timeout");
+
+    await assert.rejects(() => response, /timed out waiting for response/);
+  });
+
+  test("releases a cancelled claude-result(wait) without stopping the turn", async () => {
+    // A waiter nobody will read must not stay parked on the turn — but the turn
+    // itself is only stopped through `claude-cancel`.
+    const submitted = snapshot(
+      await server.call("claude", { prompt: "#work=600 keep going", async: true }),
+    );
+    const { sessionId } = submitted;
+    // The waiter must outlive the turn: it is asserted to have gone unanswered
+    // once everything else has settled.
+    const { id, response } = server.beginCall(
+      "claude-result",
+      { sessionId, wait: true },
+      2500,
+    );
+    await sleep(50);
+    server.send({
+      jsonrpc: "2.0",
+      method: "notifications/cancelled",
+      params: { requestId: id },
+    });
+    await sleep(50);
+
+    // The cancelled request is finished with, so its id is free again — while
+    // the server still held it, it would have suppressed this reply as belonging
+    // to a cancelled request. `ping` because a second `tools/call` would replace
+    // the entry rather than observe it.
+    const revived = await server.requestWithId(id, "ping", {}, 1000);
+    assert.deepEqual(revived.result, {}, "the request was released, not parked");
+
+    const running = snapshot(await server.call("claude-result", { sessionId }));
+    assert.equal(running.done, false, "the turn was not cancelled with the request");
+
+    const final = snapshot(
+      await server.call("claude-result", { sessionId, wait: true }),
+    );
+    assert.equal(final.status, "succeeded", "the turn finished on its own");
+    assert.equal(final.cancelRequested, false);
+
+    await assert.rejects(() => response, /timed out waiting for response/);
+  });
 });
 
 describe("the turn timeout", () => {
