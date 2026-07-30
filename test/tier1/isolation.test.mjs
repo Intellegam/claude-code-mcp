@@ -1,83 +1,67 @@
 import test, { describe } from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import {
   ALWAYS_DISALLOWED_TOOLS,
+  BRIDGE_DENY_MESSAGE,
   buildChildEnv,
   buildQueryOptions,
-  buildSystemPromptAppend,
-  readProjectContext,
 } from "../../lib/isolation.js";
-import { normalizeResult } from "../../lib/claude-runner.js";
 
 const PARENT_ENV = {
   PATH: "/usr/bin",
   HOME: "/Users/tester",
-  USER: "tester",
-  LOGNAME: "tester",
-  SHELL: "/bin/zsh",
-  TMPDIR: "/tmp/",
-  LANG: "en_US.UTF-8",
-  LC_ALL: "en_US.UTF-8",
-  LC_CTYPE: "UTF-8",
-  TERM: "xterm-256color",
+  HTTPS_PROXY: "http://proxy.internal:3128",
+  NODE_EXTRA_CA_CERTS: "/etc/ssl/corp.pem",
   ANTHROPIC_API_KEY: "sk-ant-real",
   ANTHROPIC_BASE_URL: "https://proxy.internal",
-  ANTHROPIC_MODEL: "some-override",
   CLAUDECODE: "1",
   CLAUDE_CODE_ENTRYPOINT: "cli",
-  CLAUDE_CODE_SSE_PORT: "1234",
-  MY_SECRET_TOKEN: "hunter2",
-  npm_config_registry: "https://registry.internal",
+  CLAUDE_CODE_OAUTH_TOKEN: "oauth-token",
 };
 
-describe("child environment allowlist", () => {
-  test("passes through the allowlisted vars only", () => {
+describe("child environment denylist", () => {
+  test("inherits the parent environment, including proxy and TLS settings", () => {
     const env = buildChildEnv(PARENT_ENV);
     assert.equal(env.PATH, "/usr/bin");
     assert.equal(env.HOME, "/Users/tester");
-    assert.equal(env.USER, "tester");
-    assert.equal(env.SHELL, "/bin/zsh");
-    assert.equal(env.LANG, "en_US.UTF-8");
-    assert.equal(env.LC_ALL, "en_US.UTF-8");
-    assert.equal(env.LC_CTYPE, "UTF-8");
-    assert.equal(env.TERM, "xterm-256color");
-    assert.equal(env.MY_SECRET_TOKEN, undefined);
-    assert.equal(env.npm_config_registry, undefined);
-  });
-
-  test("keeps ANTHROPIC_API_KEY but drops every other ANTHROPIC_* override", () => {
-    const env = buildChildEnv(PARENT_ENV);
+    assert.equal(env.HTTPS_PROXY, "http://proxy.internal:3128");
+    assert.equal(env.NODE_EXTRA_CA_CERTS, "/etc/ssl/corp.pem");
     assert.equal(env.ANTHROPIC_API_KEY, "sk-ant-real");
-    assert.equal(env.ANTHROPIC_BASE_URL, undefined);
-    assert.equal(env.ANTHROPIC_MODEL, undefined);
   });
 
-  test("drops nested-session markers", () => {
+  test("drops nested-session markers but keeps the OAuth credential", () => {
     const env = buildChildEnv(PARENT_ENV);
     assert.equal(env.CLAUDECODE, undefined);
     assert.equal(env.CLAUDE_CODE_ENTRYPOINT, undefined);
-    assert.equal(env.CLAUDE_CODE_SSE_PORT, undefined);
+    assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, "oauth-token");
   });
 
-  test("the test hook injects a base URL and a key", () => {
+  test("an inherited ANTHROPIC_BASE_URL never reaches the child", () => {
+    assert.equal(buildChildEnv(PARENT_ENV).ANTHROPIC_BASE_URL, undefined);
+  });
+
+  test("the test hook substitutes a dummy key and drops real credentials", () => {
     const env = buildChildEnv({
-      PATH: "/usr/bin",
+      ...PARENT_ENV,
       CLAUDE_CODE_MCP_TEST_BASE_URL: "http://127.0.0.1:9999",
     });
     assert.equal(env.ANTHROPIC_BASE_URL, "http://127.0.0.1:9999");
+    assert.notEqual(
+      env.ANTHROPIC_API_KEY,
+      "sk-ant-real",
+      "a real key must never be forwarded to a test endpoint",
+    );
     assert.ok(env.ANTHROPIC_API_KEY, "a dummy key is provided");
+    assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
   });
 });
 
 describe("query options", () => {
-  const base = { cwd: "/repo", parentEnv: PARENT_ENV, readContext: () => null };
+  const base = { cwd: "/repo", parentEnv: PARENT_ENV };
 
   test("read-only mode removes every write and execute surface", () => {
     const options = buildQueryOptions(base);
-    for (const tool of ["Write", "Edit", "NotebookEdit", "Bash", "Monitor"]) {
+    for (const tool of ["Write", "Edit", "NotebookEdit", "Bash", "Monitor", "REPL"]) {
       assert.ok(
         options.disallowedTools.includes(tool),
         `${tool} must be disallowed`,
@@ -99,20 +83,26 @@ describe("query options", () => {
   test("delegation, scheduling and messaging are blocked in both modes", () => {
     for (const writable of [false, true]) {
       const { disallowedTools } = buildQueryOptions({ ...base, writable });
-      for (const tool of ALWAYS_DISALLOWED_TOOLS) {
+      // `Task` is the name init reports, `Agent` the one the model sees.
+      for (const tool of ["Task", "Agent", "Workflow", "RemoteTrigger", "CronList"]) {
         assert.ok(
           disallowedTools.includes(tool),
           `${tool} must be disallowed (writable=${writable})`,
         );
       }
+      for (const tool of ALWAYS_DISALLOWED_TOOLS) {
+        assert.ok(disallowedTools.includes(tool), `${tool} (writable=${writable})`);
+      }
     }
   });
 
-  test("ambient configuration is stripped", () => {
+  test("the operator's own configuration sources are left alone", () => {
     const options = buildQueryOptions(base);
-    assert.deepEqual(options.settingSources, []);
-    assert.equal(options.strictMcpConfig, true);
-    assert.deepEqual(options.mcpServers, {});
+    assert.equal(
+      options.settingSources,
+      undefined,
+      "the CLI default (user + project + local) is the point",
+    );
     assert.equal(options.env.CLAUDECODE, undefined);
   });
 
@@ -121,19 +111,11 @@ describe("query options", () => {
     assert.equal(options.systemPrompt.type, "preset");
     assert.equal(options.systemPrompt.preset, "claude_code");
     assert.match(options.systemPrompt.append, /second\s+opinion/i);
-  });
-
-  test("a runtime tool policy is installed in both modes", async () => {
-    for (const writable of [false, true]) {
-      const { canUseTool } = buildQueryOptions({ ...base, writable });
-      assert.equal(typeof canUseTool, "function");
-      const denied = await canUseTool("mcp__anything__at_all", { q: 1 });
-      assert.equal(denied.behavior, "deny");
-      assert.match(denied.message, /MCP tools are not available/);
-      const allowed = await canUseTool("Read", { file_path: "/x" });
-      assert.equal(allowed.behavior, "allow");
-      assert.deepEqual(allowed.updatedInput, { file_path: "/x" });
-    }
+    assert.match(
+      options.systemPrompt.append,
+      /Agent-bridge MCP\s+servers[\s\S]*unavailable/,
+      "the consulted agent is told not to go looking for a bridge",
+    );
   });
 
   test("resume is only set when asked for", () => {
@@ -142,83 +124,50 @@ describe("query options", () => {
   });
 });
 
-describe("project context injection", () => {
-  test("the root CLAUDE.md is read and appended under a header", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccmcp-ctx-"));
-    try {
-      fs.writeFileSync(
-        path.join(dir, "CLAUDE.md"),
-        "# Fixture\n\nMARKER-XYZZY: always say plugh.\n",
-      );
-      const context = readProjectContext(dir);
-      assert.match(context.text, /MARKER-XYZZY/);
-      assert.equal(context.truncated, false);
-
-      const append = buildSystemPromptAppend(dir);
-      assert.match(append, /# Project context/);
-      assert.match(append, /MARKER-XYZZY/);
-      assert.match(append, /second\s+opinion/i);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("a missing or empty CLAUDE.md leaves just the preamble", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccmcp-ctx-"));
-    try {
-      assert.equal(readProjectContext(dir), null);
-      const append = buildSystemPromptAppend(dir);
-      assert.doesNotMatch(append, /# Project context/);
-
-      fs.writeFileSync(path.join(dir, "CLAUDE.md"), "   \n");
-      assert.equal(readProjectContext(dir), null);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("result normalization", () => {
-  test("a success result is not an error", () => {
-    const result = normalizeResult({
-      type: "result",
-      subtype: "success",
-      is_error: false,
-      result: "done",
-      errors: [],
+describe("the agent-bridge PreToolUse gate", () => {
+  const decide = async (options, toolName) => {
+    const [matcher] = options.hooks.PreToolUse;
+    const [hook] = matcher.hooks;
+    return hook({ hook_event_name: "PreToolUse", tool_name: toolName }, "id", {
+      signal: new AbortController().signal,
     });
-    assert.equal(result.isError, false);
-    assert.equal(result.text, "done");
-  });
+  };
 
-  test("an error result without errors[] does not throw", () => {
-    const result = normalizeResult({
-      type: "result",
-      subtype: "error_during_execution",
-      is_error: true,
+  // A hook rather than canUseTool because canUseTool is never invoked under
+  // `bypassPermissions` — the writable mode this wrapper uses.
+  for (const writable of [false, true]) {
+    test(`bridge servers are denied (writable=${writable})`, async () => {
+      const options = buildQueryOptions({ cwd: "/repo", writable });
+      for (const tool of [
+        "mcp__codex-agent__codex",
+        "mcp__codex__reply",
+        "mcp__claude-code-mcp__claude",
+        "mcp__CLAUDE_CODE__claude",
+      ]) {
+        const decision = await decide(options, tool);
+        assert.equal(
+          decision.hookSpecificOutput.permissionDecision,
+          "deny",
+          tool,
+        );
+        assert.equal(
+          decision.hookSpecificOutput.permissionDecisionReason,
+          BRIDGE_DENY_MESSAGE,
+        );
+      }
     });
-    assert.equal(result.isError, true);
-    assert.deepEqual(result.errors, []);
-    assert.equal(result.text, "");
-  });
 
-  test("aborted interrupts are recognizable", () => {
-    const result = normalizeResult({
-      type: "result",
-      subtype: "error_during_execution",
-      is_error: true,
-      terminal_reason: "aborted_streaming",
+    test(`repo-declared MCP tools are allowed (writable=${writable})`, async () => {
+      const options = buildQueryOptions({ cwd: "/repo", writable });
+      const decision = await decide(options, "mcp__logfire__query_run");
+      assert.equal(decision.hookSpecificOutput.permissionDecision, "allow");
     });
-    assert.equal(result.terminalReason, "aborted_streaming");
-  });
+  }
 
-  test("error objects and strings both become messages", () => {
-    const result = normalizeResult({
-      type: "result",
-      subtype: "error_during_execution",
-      is_error: true,
-      errors: ["plain string", { message: "object error" }],
-    });
-    assert.deepEqual(result.errors, ["plain string", "object error"]);
+  test("built-in tools fall through to the CLI's own handling", async () => {
+    const options = buildQueryOptions({ cwd: "/repo" });
+    const decision = await decide(options, "Read");
+    assert.equal(decision.hookSpecificOutput, undefined);
+    assert.equal(decision.continue, true);
   });
 });

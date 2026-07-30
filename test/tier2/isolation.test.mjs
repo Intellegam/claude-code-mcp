@@ -1,170 +1,219 @@
 /**
  * Integration tier: the real Claude Code CLI (bundled with the SDK) against a
  * mock Anthropic API. No network, no real model, no OAuth.
+ *
+ * This is where the trust model is asserted end to end: a consultation runs as
+ * the operator's own Claude Code — user *and* project configuration load — and
+ * the tool surface is exactly what the wrapper intends.
  */
 
 import test, { after, before, describe } from "node:test";
 import assert from "node:assert/strict";
-import { startMock, systemText, toolResults } from "../helpers/mock-api.mjs";
+import { systemText, toolResults } from "../helpers/mock-api.mjs";
 import {
+  BRIDGE_MCP_TOOL,
+  MCP_TOOL_OUTPUT,
   PROJECT_MARKER,
+  REPO_MCP_TOOL,
   USER_MARKER,
-  createSandbox,
+  USER_MCP_TOOL,
+  startTier2,
 } from "../helpers/fixtures.mjs";
-import { spawnServer } from "../helpers/harness.mjs";
 
-describe("ambient configuration is not loaded", () => {
-  const sandbox = createSandbox();
-  let mock;
-  let server;
+/**
+ * The built-in tools a read-only consultation may use, as the CLI reports them.
+ *
+ * This is a drift guard, not a description: an SDK/CLI bump that introduces a
+ * new capability tool has to fail here rather than silently widen the surface.
+ * When it does, decide whether the newcomer belongs on a disallow list in
+ * lib/isolation.js before updating this snapshot.
+ */
+const READ_ONLY_BUILTIN_TOOLS = [
+  "DesignSync",
+  "Glob",
+  "Grep",
+  "Read",
+  "ReportFindings",
+  "Skill",
+  "TaskCreate",
+  "TaskGet",
+  "TaskList",
+  "TaskOutput",
+  "TaskStop",
+  "TaskUpdate",
+  "WebFetch",
+  "WebSearch",
+];
+
+describe("the operator's own configuration is what loads", () => {
+  let ctx;
 
   before(async () => {
-    mock = await startMock({ turns: [{ text: "isolation check done" }] });
-    server = spawnServer({
-      useMockQuery: false,
-      cwd: sandbox.repo,
-      env: {
-        HOME: sandbox.home,
-        CLAUDE_CODE_MCP_TEST_BASE_URL: mock.url,
-        CLAUDE_TIMEOUT_MS: "120000",
-      },
+    ctx = await startTier2({
+      mcpServers: true,
+      turns: [{ text: "isolation check done" }],
     });
-    await server.init();
   });
 
-  after(async () => {
-    server?.close();
-    await mock?.stop();
-    sandbox.cleanup();
-  });
+  after(async () => ctx?.stop());
 
   test("a turn completes against the real CLI", async () => {
-    const response = await server.call(
+    const response = await ctx.server.call(
       "claude",
-      { prompt: "Say hello.", cwd: sandbox.repo },
+      { prompt: "Say hello.", cwd: ctx.sandbox.repo },
       120000,
     );
     assert.equal(response.error, undefined, JSON.stringify(response.error));
     assert.match(response.result.content[0].text, /isolation check done/);
   });
 
-  test("no project or user hook fired, and no project MCP server started", () => {
-    assert.deepEqual(sandbox.firedSentinels(), []);
+  test("both the user and the project hook ran", () => {
+    assert.deepEqual(ctx.sandbox.firedSentinels(), [
+      "project-hook",
+      "user-hook",
+    ]);
   });
 
-  test("no MCP tools were offered to the model", () => {
-    const call = mock.mainCalls()[0];
-    assert.ok(call, "a main turn was recorded");
-    const mcpTools = call.tools.filter((name) => name.startsWith("mcp__"));
-    assert.deepEqual(mcpTools, []);
-    assert.ok(!call.tools.includes("poison_ping"));
+  test("user and project memory both reach the model", () => {
+    const conversation = JSON.stringify(ctx.mock.mainCalls()[0].messages);
+    assert.match(conversation, new RegExp(PROJECT_MARKER));
+    assert.match(conversation, new RegExp(USER_MARKER));
   });
 
-  test("the project CLAUDE.md reaches the model only through our injection", () => {
-    const system = systemText(mock.mainCalls()[0].system);
-    const occurrences = system.split(PROJECT_MARKER).length - 1;
-    assert.equal(occurrences, 1, "injected exactly once");
-    assert.match(system, /# Project context/);
+  test("MCP servers from both scopes are offered to the model", () => {
+    const { tools } = ctx.mock.mainCalls()[0];
+    assert.ok(tools.includes(USER_MCP_TOOL), JSON.stringify(tools));
+    assert.ok(tools.includes(REPO_MCP_TOOL), JSON.stringify(tools));
     assert.ok(
-      system.indexOf("# Project context") < system.indexOf(PROJECT_MARKER),
-      "the marker sits under our header",
+      tools.includes(BRIDGE_MCP_TOOL),
+      "a bridge server still loads; it is denied at call time, not hidden",
     );
   });
 
-  test("user-level memory is not loaded", () => {
-    const system = systemText(mock.mainCalls()[0].system);
-    assert.ok(!system.includes(USER_MARKER));
-  });
-
   test("the Claude Code preset system prompt is used", () => {
-    const system = systemText(mock.mainCalls()[0].system);
+    const system = systemText(ctx.mock.mainCalls()[0].system);
     assert.ok(system.length > 5000, `system prompt is only ${system.length} chars`);
     assert.match(system, /second\s+opinion/i, "consultation preamble present");
   });
 
-  test("read-only mode offers no write, shell or delegation tools", () => {
-    const tools = mock.mainCalls()[0].tools;
-    for (const blocked of [
-      "Write",
-      "Edit",
-      "NotebookEdit",
-      "Bash",
-      "Monitor",
-      "Task",
-      "Workflow",
-      "EnterWorktree",
-      "CronCreate",
-      "SendMessage",
-    ]) {
-      assert.ok(!tools.includes(blocked), `${blocked} must not be offered`);
-    }
-    assert.ok(tools.includes("Read"), "Read is still available");
+  test("the read-only built-in tool surface matches the snapshot", () => {
+    const builtins = ctx.mock
+      .mainCalls()[0]
+      .tools.filter((name) => !name.startsWith("mcp__"))
+      .sort();
+    // The fixture's project settings allow Bash and Write; `disallowedTools`
+    // has to beat that.
+    assert.deepEqual(builtins, READ_ONLY_BUILTIN_TOOLS);
   });
 });
 
-describe("the child process environment", () => {
-  const sandbox = createSandbox({ poison: false });
-  let mock;
-  let server;
+describe("MCP tool availability", () => {
+  let ctx;
 
   before(async () => {
-    mock = await startMock({
+    ctx = await startTier2({
+      mcpServers: true,
+      turns: [
+        { tool: REPO_MCP_TOOL, input: {} },
+        { text: "the repo tool ran" },
+        { tool: BRIDGE_MCP_TOOL, input: {} },
+        { text: "the bridge was refused" },
+        { tool: BRIDGE_MCP_TOOL, input: {} },
+        { text: "the bridge was refused again" },
+      ],
+    });
+  });
+
+  after(async () => ctx?.stop());
+
+  test("a benign MCP tool runs even in read-only mode", async () => {
+    const response = await ctx.server.call(
+      "claude",
+      { prompt: "Use the repo tool.", cwd: ctx.sandbox.repo },
+      120000,
+    );
+    assert.equal(response.error, undefined, JSON.stringify(response.error));
+    const results = toolResults(ctx.mock.mainCalls()[1]);
+    assert.equal(results[0].isError, false, JSON.stringify(results));
+    assert.match(results[0].text, new RegExp(MCP_TOOL_OUTPUT));
+  });
+
+  for (const writable of [false, true]) {
+    test(`an agent-bridge MCP tool is denied (writable=${writable})`, async () => {
+      const before = ctx.mock.mainCalls().length;
+      const response = await ctx.server.call(
+        "claude",
+        { prompt: "Call codex.", cwd: ctx.sandbox.repo, writable },
+        120000,
+      );
+      assert.equal(response.error, undefined, JSON.stringify(response.error));
+      const results = toolResults(ctx.mock.mainCalls()[before + 1]);
+      assert.equal(results[0].isError, true, JSON.stringify(results));
+      assert.match(results[0].text, /Agent-bridge MCP servers are not available/);
+    });
+  }
+});
+
+describe("the child process environment", () => {
+  let ctx;
+
+  before(async () => {
+    ctx = await startTier2({
       turns: [
         {
           tool: "Bash",
           input: {
             command:
-              'echo "CANARY=[$CCMCP_CANARY_VAR] NESTED=[$CLAUDECODE] SECRET=[$CCMCP_SECRET]"',
+              'echo "PREFIXED=[$CLAUDE_CODE_CANARY] OAUTH=[$CLAUDE_CODE_OAUTH_TOKEN] INHERITED=[$CCMCP_ORDINARY_VAR]"',
             description: "probe the environment",
           },
         },
         { text: "environment probed" },
       ],
-    });
-    server = spawnServer({
-      useMockQuery: false,
-      cwd: sandbox.repo,
       env: {
-        HOME: sandbox.home,
-        CLAUDE_CODE_MCP_TEST_BASE_URL: mock.url,
-        CLAUDE_TIMEOUT_MS: "120000",
-        CCMCP_CANARY_VAR: "canary-value-must-not-leak",
-        CCMCP_SECRET: "secret-value-must-not-leak",
-        CLAUDECODE: "1",
+        CCMCP_ORDINARY_VAR: "inherited-on-purpose",
+        CLAUDE_CODE_CANARY: "canary-must-not-leak",
+        CLAUDE_CODE_OAUTH_TOKEN: "token-must-not-leak",
       },
     });
-    await server.init();
   });
 
-  after(async () => {
-    server?.close();
-    await mock?.stop();
-    sandbox.cleanup();
-  });
+  after(async () => ctx?.stop());
 
-  test("the canary variables are not visible to the child", async () => {
-    const response = await server.call(
+  test("CLAUDE_CODE_* is stripped, ordinary vars are inherited", async () => {
+    const response = await ctx.server.call(
       "claude",
-      { prompt: "Probe the environment.", cwd: sandbox.repo, writable: true },
+      { prompt: "Probe the environment.", cwd: ctx.sandbox.repo, writable: true },
       120000,
     );
     assert.equal(response.error, undefined, JSON.stringify(response.error));
 
-    const followUp = mock.mainCalls()[1];
-    assert.ok(followUp, "the tool result was sent back to the model");
-    const results = toolResults(followUp);
+    const results = toolResults(ctx.mock.mainCalls()[1]);
     assert.equal(results.length, 1, JSON.stringify(results));
     const output = results[0].text;
-    assert.match(output, /CANARY=\[\]/);
-    assert.match(output, /SECRET=\[\]/);
+    assert.match(output, /PREFIXED=\[\]/, "CLAUDE_CODE_* must not be inherited");
+    assert.match(
+      output,
+      /OAUTH=\[\]/,
+      "a credential is never forwarded to the test endpoint",
+    );
+    assert.match(output, /INHERITED=\[inherited-on-purpose\]/);
     assert.ok(!output.includes("must-not-leak"));
   });
 
   test("writable mode offers the write tools but still no delegation", () => {
-    const tools = mock.mainCalls()[0].tools;
+    const { tools } = ctx.mock.mainCalls()[0];
     assert.ok(tools.includes("Write"));
     assert.ok(tools.includes("Bash"));
-    for (const blocked of ["Task", "Workflow", "SendMessage", "EnterWorktree"]) {
+    for (const blocked of [
+      "Task",
+      "Agent",
+      "Workflow",
+      "SendMessage",
+      "EnterWorktree",
+      "RemoteTrigger",
+      "CronList",
+    ]) {
       assert.ok(!tools.includes(blocked), `${blocked} must not be offered`);
     }
   });

@@ -20,55 +20,10 @@ describe("sync tool calls", () => {
     assert.match(texts[1], /\[SESSION_ID: mock-/);
   });
 
-  test("read-only is the default tool surface", async () => {
-    const response = await server.call("claude", { prompt: "opts" });
-    const trailer = mockTrailer(response.result.content[0].text);
-    for (const tool of ["Write", "Edit", "NotebookEdit", "Bash", "Monitor", "Task"]) {
-      assert.ok(trailer.disallowedTools.includes(tool), `${tool} disallowed`);
-    }
-    assert.equal(trailer.permissionMode, null);
-    assert.equal(trailer.strictMcpConfig, true);
-    assert.deepEqual(trailer.settingSources, []);
-    assert.ok(trailer.systemPromptAppendChars > 100, "consultation preamble appended");
-    assert.equal(trailer.resume, null);
-  });
-
   test("the prompt stream is held open until the turn settles", async () => {
     const response = await server.call("claude", { prompt: "hold" });
     const trailer = mockTrailer(response.result.content[0].text);
     assert.equal(trailer.promptHeldOpen, true);
-  });
-
-  test("writable switches permission mode but still blocks delegation", async () => {
-    const response = await server.call("claude", {
-      prompt: "write something",
-      writable: true,
-    });
-    const trailer = mockTrailer(response.result.content[0].text);
-    assert.equal(trailer.permissionMode, "bypassPermissions");
-    assert.ok(trailer.disallowedTools.includes("Task"));
-    assert.ok(!trailer.disallowedTools.includes("Write"));
-  });
-
-  test("mcp__ tools are denied at call time in both modes", async () => {
-    for (const writable of [false, true]) {
-      const response = await server.call("claude", {
-        prompt:
-          "#try-tool=mcp__logfire__query #try-tool=mcp__codex-agent__codex #try-tool=Read policy",
-        writable,
-      });
-      const output = response.result.content[0].text;
-      const decisions = [...output.matchAll(/\[\[tool:([^:]+):([^:]+):([^\]]*)\]\]/g)].map(
-        (match) => ({ tool: match[1], behavior: match[2], message: match[3] }),
-      );
-      assert.equal(decisions.length, 3, output);
-      assert.deepEqual(
-        decisions.map((decision) => decision.behavior),
-        ["deny", "deny", "allow"],
-        `writable=${writable}`,
-      );
-      assert.match(decisions[0].message, /MCP tools are not available/);
-    }
   });
 
   test("cwd is passed through to the SDK", async () => {
@@ -96,6 +51,19 @@ describe("sync tool calls", () => {
     const reply = await server.call("claude-reply", { sessionId, prompt: "more" });
     const trailer = mockTrailer(reply.result.content[0].text);
     assert.equal(trailer.permissionMode, "bypassPermissions");
+  });
+
+  test("a reply cannot grant itself write access", async () => {
+    const first = await server.call("claude", { prompt: "start" });
+    const sessionId = sessionIdFrom(first);
+    // `writable` is undeclared on claude-reply; an unknown argument must not
+    // upgrade a read-only session.
+    const reply = await server.call("claude-reply", {
+      sessionId,
+      prompt: "more",
+      writable: true,
+    });
+    assert.equal(mockTrailer(reply.result.content[0].text).permissionMode, null);
   });
 
   test("resuming an unknown session explains the cwd requirement", async () => {

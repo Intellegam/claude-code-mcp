@@ -9,7 +9,7 @@
  *
  *   #init=<ms>            delay before `system/init`            (default 5)
  *   #work=<ms>            delay between init and the result     (default 5)
- *   #partial              emit an assistant message before the result
+ *   #newid=<id>           report <id> as the session id at init (resume drift)
  *   #noinit               never emit init; error result + stderr (bad resume)
  *   #error                error result, with `errors[]` populated
  *   #error-bare           error result *without* an `errors[]` array
@@ -17,11 +17,9 @@
  *   #ignore-interrupt     never react to interrupt (exercises the watchdog)
  *   #finish-on-interrupt  a success result lands despite the interrupt
  *   #stderr=<text>        write <text> to the stderr callback
- *   #try-tool=<name>      ask the canUseTool policy about <name> and report the
- *                         decision as `[[tool:<name>:<behavior>:<message>]]`
  *
  * Every success result carries a `[[mock:{...}]]` trailer describing the
- * options the runner passed in, so tests can assert on isolation and resume.
+ * options the runner passed in, so tests can assert on wiring and resume.
  */
 
 import crypto from "node:crypto";
@@ -32,7 +30,7 @@ function parseDirectives(text) {
   const directives = {
     initMs: 5,
     workMs: 5,
-    partial: false,
+    newId: null,
     noinit: false,
     error: false,
     errorBare: false,
@@ -40,7 +38,6 @@ function parseDirectives(text) {
     ignoreInterrupt: false,
     finishOnInterrupt: false,
     stderr: "",
-    tryTools: [],
   };
   const words = String(text).split(/\s+/);
   let i = 0;
@@ -55,8 +52,8 @@ function parseDirectives(text) {
       case "work":
         directives.workMs = Number(value) || 0;
         break;
-      case "partial":
-        directives.partial = true;
+      case "newid":
+        directives.newId = value || null;
         break;
       case "noinit":
         directives.noinit = true;
@@ -78,9 +75,6 @@ function parseDirectives(text) {
         break;
       case "stderr":
         directives.stderr = (value || "").replace(/_/g, " ");
-        break;
-      case "try-tool":
-        if (value) directives.tryTools.push(value);
         break;
       default:
         break;
@@ -136,7 +130,6 @@ export function query({ prompt, options = {} }) {
     interrupts: 0,
     preInitInterrupts: 0,
     promptClosed: false,
-    resultEmitted: false,
     closed: false,
   };
 
@@ -149,22 +142,13 @@ export function query({ prompt, options = {} }) {
     signalPromptClosed = resolve;
   });
 
-  const trailer = (directives) =>
+  const trailer = () =>
     `\n[[mock:${JSON.stringify({
       resume: options.resume ?? null,
       cwd: options.cwd ?? null,
       permissionMode: options.permissionMode ?? null,
-      disallowedTools: options.disallowedTools ?? null,
-      strictMcpConfig: options.strictMcpConfig ?? null,
-      settingSources: options.settingSources ?? null,
-      systemPromptAppendChars: options.systemPrompt?.append?.length ?? 0,
       promptHeldOpen: !state.promptClosed,
-      interrupts: state.interrupts,
-      preInitInterrupts: state.preInitInterrupts,
-      ignoredInterrupt: directives.ignoreInterrupt,
     })}]]`;
-
-  const sessionId = options.resume || `mock-${crypto.randomUUID()}`;
 
   async function drive() {
     // Consume the hold-open prompt stream.
@@ -177,6 +161,8 @@ export function query({ prompt, options = {} }) {
     });
 
     const { directives, prompt: cleanPrompt } = parseDirectives(promptText);
+    const sessionId =
+      directives.newId || options.resume || `mock-${crypto.randomUUID()}`;
     if (directives.stderr) options.stderr?.(`${directives.stderr}\n`);
 
     await sleep(directives.initMs);
@@ -186,7 +172,6 @@ export function query({ prompt, options = {} }) {
       options.stderr?.(
         `No conversation found with session ID: ${options.resume ?? "unknown"}\n`,
       );
-      state.resultEmitted = true;
       channel.push({
         type: "result",
         subtype: "error_during_execution",
@@ -216,14 +201,6 @@ export function query({ prompt, options = {} }) {
       return;
     }
 
-    if (directives.partial) {
-      channel.push({
-        type: "assistant",
-        session_id: sessionId,
-        message: { role: "assistant", content: [{ type: "text", text: "partial output" }] },
-      });
-    }
-
     const outcome = directives.ignoreInterrupt
       ? await sleep(directives.workMs).then(() => "complete")
       : await Promise.race([
@@ -231,8 +208,6 @@ export function query({ prompt, options = {} }) {
           interrupted.then(() => "interrupted"),
         ]);
     if (state.closed) return;
-
-    state.resultEmitted = true;
 
     if (outcome === "interrupted" && !directives.finishOnInterrupt) {
       // The aborted result carries no text, so report the interrupt accounting
@@ -286,16 +261,6 @@ export function query({ prompt, options = {} }) {
       return;
     }
 
-    // Ask the wrapper's runtime tool policy about each requested tool, the way
-    // the CLI would before running one.
-    let decisions = "";
-    for (const toolName of directives.tryTools) {
-      const decision = (await options.canUseTool?.(toolName, {})) ?? {
-        behavior: "no-policy",
-      };
-      decisions += `\n[[tool:${toolName}:${decision.behavior}:${decision.message ?? ""}]]`;
-    }
-
     channel.push({
       type: "assistant",
       session_id: sessionId,
@@ -308,7 +273,7 @@ export function query({ prompt, options = {} }) {
       type: "result",
       subtype: "success",
       is_error: false,
-      result: `Mock response to: ${cleanPrompt}${decisions}${trailer(directives)}`,
+      result: `Mock response to: ${cleanPrompt}${trailer()}`,
       errors: [],
     });
     // Mirrors the SDK: with a streaming prompt the iterator stays open for the

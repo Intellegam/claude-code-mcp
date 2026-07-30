@@ -4,48 +4,29 @@
 
 import test, { after, before, describe } from "node:test";
 import assert from "node:assert/strict";
-import { startMock } from "../helpers/mock-api.mjs";
-import { createSandbox } from "../helpers/fixtures.mjs";
-import { sessionIdFrom, spawnServer } from "../helpers/harness.mjs";
+import { sessionIdFrom } from "../helpers/harness.mjs";
+import { startTier2 } from "../helpers/fixtures.mjs";
 
 describe("resume", () => {
-  const sandbox = createSandbox({ poison: false });
-  let mock;
-  let server;
+  let ctx;
   let sessionId;
 
-  const serverEnv = () => ({
-    HOME: sandbox.home,
-    CLAUDE_CODE_MCP_TEST_BASE_URL: mock.url,
-    CLAUDE_TIMEOUT_MS: "120000",
-  });
-
   before(async () => {
-    mock = await startMock({
+    ctx = await startTier2({
       turns: [
         { text: "Understood: the magic word is kumquat." },
         { text: "The magic word is kumquat." },
         { text: "Still kumquat." },
       ],
     });
-    server = spawnServer({
-      useMockQuery: false,
-      cwd: sandbox.repo,
-      env: serverEnv(),
-    });
-    await server.init();
   });
 
-  after(async () => {
-    server?.close();
-    await mock?.stop();
-    sandbox.cleanup();
-  });
+  after(async () => ctx?.stop());
 
   test("a first turn returns a session id", async () => {
-    const response = await server.call(
+    const response = await ctx.server.call(
       "claude",
-      { prompt: "Remember: the magic word is kumquat.", cwd: sandbox.repo },
+      { prompt: "Remember: the magic word is kumquat.", cwd: ctx.sandbox.repo },
       120000,
     );
     assert.equal(response.error, undefined, JSON.stringify(response.error));
@@ -54,42 +35,38 @@ describe("resume", () => {
   });
 
   test("a reply keeps the id and replays the conversation", async () => {
-    const response = await server.call(
+    const response = await ctx.server.call(
       "claude-reply",
-      { sessionId, prompt: "What is the magic word?", cwd: sandbox.repo },
+      { sessionId, prompt: "What is the magic word?", cwd: ctx.sandbox.repo },
       120000,
     );
     assert.equal(response.error, undefined, JSON.stringify(response.error));
+    // Not a tautology: the engine adopts whatever id `system/init` reports, so
+    // this compares the id the CLI answered with against the one we resumed.
     assert.equal(sessionIdFrom(response), sessionId, "session id is preserved");
 
-    const replayed = JSON.stringify(mock.mainCalls()[1].messages);
+    const replayed = JSON.stringify(ctx.mock.mainCalls()[1].messages);
     assert.match(replayed, /kumquat/, "the earlier turn was replayed");
     assert.match(replayed, /What is the magic word/);
   });
 
   test("resuming from the wrong cwd fails with an actionable message", async () => {
-    const response = await server.call(
+    const response = await ctx.server.call(
       "claude-reply",
-      { sessionId, prompt: "And again?", cwd: sandbox.root },
+      { sessionId, prompt: "And again?", cwd: ctx.sandbox.root },
       120000,
     );
     assert.ok(response.error, "expected a failure");
     assert.match(response.error.message, /same cwd the session was created in/);
     assert.match(response.error.message, /No conversation found with session ID/);
+    assert.match(response.error.message, /sessionId: /, "the handle is kept");
   });
 
   test("resume works across a server restart", async () => {
-    server.close();
-    server = spawnServer({
-      useMockQuery: false,
-      cwd: sandbox.repo,
-      env: serverEnv(),
-    });
-    await server.init();
-
-    const response = await server.call(
+    await ctx.restart();
+    const response = await ctx.server.call(
       "claude-reply",
-      { sessionId, prompt: "Once more: the magic word?", cwd: sandbox.repo },
+      { sessionId, prompt: "Once more: the magic word?", cwd: ctx.sandbox.repo },
       120000,
     );
     assert.equal(response.error, undefined, JSON.stringify(response.error));
