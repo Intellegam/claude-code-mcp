@@ -5,6 +5,7 @@ import {
   mockTrailer,
   sessionIdFrom,
   spawnServer,
+  toolError,
 } from "../helpers/harness.mjs";
 
 describe("sync tool calls", () => {
@@ -67,22 +68,20 @@ describe("sync tool calls", () => {
       prompt: "#noinit hello",
       cwd: REPO_ROOT,
     });
-    assert.ok(response.error, "expected an error");
-    assert.match(response.error.message, /No conversation found with session ID/);
-    assert.match(response.error.message, /same cwd the session was created in/);
-    assert.match(response.error.message, new RegExp(REPO_ROOT));
+    const failure = toolError(response);
+    assert.match(failure, /No conversation found with session ID/);
+    assert.match(failure, /same cwd the session was created in/);
+    assert.match(failure, new RegExp(REPO_ROOT));
   });
 
   test("an error result fails the call with the SDK's error text", async () => {
     const response = await server.call("claude", { prompt: "#error boom" });
-    assert.ok(response.error);
-    assert.match(response.error.message, /mock failure/);
+    assert.match(toolError(response), /mock failure/);
   });
 
   test("an error result without errors[] is handled, not crashed on", async () => {
     const response = await server.call("claude", { prompt: "#error-bare boom" });
-    assert.ok(response.error);
-    assert.match(response.error.message, /error_during_execution/);
+    assert.match(toolError(response), /error_during_execution/);
     // Server survives.
     const after = await server.call("claude", { prompt: "still alive" });
     assert.match(after.result.content[0].text, /Mock response to: still alive/);
@@ -92,8 +91,8 @@ describe("sync tool calls", () => {
     const response = await server.call("claude", {
       prompt: "#throw #stderr=disk_on_fire nope",
     });
-    assert.ok(response.error);
-    assert.match(response.error.message, /mock: stream exploded/);
-    assert.match(response.error.message, /stderr: disk on fire/);
+    const failure = toolError(response);
+    assert.match(failure, /mock: stream exploded/);
+    assert.match(failure, /stderr: disk on fire/);
   });
 });

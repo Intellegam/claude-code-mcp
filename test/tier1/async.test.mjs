@@ -6,6 +6,7 @@ import {
   sleep,
   snapshot,
   spawnServer,
+  toolError,
 } from "../helpers/harness.mjs";
 
 function interruptReport(output) {
@@ -190,9 +191,9 @@ describe("async submissions", () => {
 
   test("unknown session ids are rejected", async () => {
     const result = await server.call("claude-result", { sessionId: "nope" });
-    assert.match(result.error.message, /Unknown sessionId/);
+    assert.match(toolError(result), /Unknown sessionId/);
     const cancel = await server.call("claude-cancel", { sessionId: "nope" });
-    assert.match(cancel.error.message, /Unknown sessionId/);
+    assert.match(toolError(cancel), /Unknown sessionId/);
   });
 
   test("claude-result(wait) answers about the turn it observed", async () => {
@@ -241,6 +242,45 @@ describe("async submissions", () => {
     ]);
     assert.match(finalA.output, /alpha/);
     assert.match(finalB.output, /beta/);
+  });
+});
+
+describe("notifications/cancelled", () => {
+  const server = spawnServer();
+  after(() => server.close());
+
+  test("cancels the turn the request started and sends no response", async () => {
+    await server.init();
+    // A reply, so the session id is known before the request is cancelled.
+    const seeded = await server.call("claude", { prompt: "seed" });
+    const sessionId = sessionIdFrom(seeded);
+
+    const { id, response } = server.beginCall(
+      "claude-reply",
+      { sessionId, prompt: "#work=8000 slow reply" },
+      2000,
+    );
+    await pollUntil(server, sessionId, (s) => s.status === "running");
+
+    server.send({
+      jsonrpc: "2.0",
+      method: "notifications/cancelled",
+      params: { requestId: id, reason: "the client went away" },
+    });
+
+    const final = await pollUntil(server, sessionId, (s) => s.done);
+    assert.equal(final.status, "cancelled");
+    assert.deepEqual(interruptReport(final.output), {
+      interrupts: 1,
+      preInitInterrupts: 0,
+    });
+
+    // Per MCP the server must not answer a request that was cancelled.
+    await assert.rejects(
+      () => response,
+      /timed out waiting for response/,
+      "the cancelled request was answered anyway",
+    );
   });
 });
 

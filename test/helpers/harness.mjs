@@ -86,6 +86,21 @@ export function spawnServer({ env = {}, cwd = REPO_ROOT, useMockQuery = true } =
     },
 
     /**
+     * Send a tool call and hand back its JSON-RPC id alongside the pending
+     * response — what a client needs to cancel the request it just made.
+     */
+    beginCall(name, args, timeoutMs) {
+      const id = nextId++;
+      send({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name, arguments: args },
+      });
+      return { id, response: waitFor(id, timeoutMs) };
+    },
+
+    /**
      * Write several tool calls in a *single* stdin chunk, so the server's line
      * handler starts them all before any of them can await. That is what makes
      * ordering races between two requests reproducible.
@@ -124,6 +139,26 @@ export function snapshot(response) {
     throw new Error(`expected snapshot, got error: ${response.error.message}`);
   }
   return JSON.parse(response.result.content[0].text);
+}
+
+/**
+ * The text of a failed tool call.
+ *
+ * A tool that fails answers with a result carrying `isError: true`, not a
+ * JSON-RPC error — the model that called it has to see the message.
+ */
+export function toolError(response) {
+  if (response.error) {
+    throw new Error(
+      `expected a tool result, got JSON-RPC ${response.error.code}: ${response.error.message}`,
+    );
+  }
+  if (response.result?.isError !== true) {
+    throw new Error(
+      `expected a failed tool result, got: ${JSON.stringify(response.result)}`,
+    );
+  }
+  return response.result.content.map((block) => block.text).join("\n");
 }
 
 /** Parse the `[[mock:{...}]]` trailer the mock query appends to its output. */

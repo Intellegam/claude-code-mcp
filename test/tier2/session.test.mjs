@@ -4,7 +4,7 @@
 
 import test, { after, before, describe } from "node:test";
 import assert from "node:assert/strict";
-import { sessionIdFrom } from "../helpers/harness.mjs";
+import { sessionIdFrom, toolError } from "../helpers/harness.mjs";
 import { startTier2 } from "../helpers/fixtures.mjs";
 
 describe("resume", () => {
@@ -56,10 +56,10 @@ describe("resume", () => {
       { sessionId, prompt: "And again?", cwd: ctx.sandbox.root },
       120000,
     );
-    assert.ok(response.error, "expected a failure");
-    assert.match(response.error.message, /same cwd the session was created in/);
-    assert.match(response.error.message, /No conversation found with session ID/);
-    assert.match(response.error.message, /sessionId: /, "the handle is kept");
+    const failure = toolError(response);
+    assert.match(failure, /same cwd the session was created in/);
+    assert.match(failure, /No conversation found with session ID/);
+    assert.match(failure, /sessionId: /, "the handle is kept");
   });
 
   test("resume works across a server restart", async () => {

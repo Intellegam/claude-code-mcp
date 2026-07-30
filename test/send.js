@@ -133,12 +133,18 @@ send({
 const response = await wait();
 
 if (response.error) {
-  console.error(`Error: ${response.error.message}`);
+  console.error(`Protocol error: ${response.error.message}`);
   done();
   process.exit(1);
 }
 
 for (const block of response.result.content) console.log(block.text);
+
+// A failed tool call is a result carrying `isError`, not a JSON-RPC error.
+if (response.result.isError) {
+  done();
+  process.exit(1);
+}
 
 if (args.async) {
   const submitted = JSON.parse(response.result.content[0].text);
@@ -154,8 +160,10 @@ if (args.async) {
       },
     });
     const polled = await wait();
-    if (polled.error) {
-      console.error(`Error: ${polled.error.message}`);
+    if (polled.error || polled.result.isError) {
+      console.error(
+        `Error: ${polled.error?.message ?? polled.result.content[0].text}`,
+      );
       done();
       process.exit(1);
     }

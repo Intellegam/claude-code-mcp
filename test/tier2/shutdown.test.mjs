@@ -8,7 +8,7 @@
 import test, { after, before, describe } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { sleep } from "../helpers/harness.mjs";
+import { sleep, toolError } from "../helpers/harness.mjs";
 import { LONG_STREAM, startTier2 } from "../helpers/fixtures.mjs";
 
 /** Direct children of `pid`. `pgrep` exits 1 — i.e. throws — when there are none. */
@@ -64,11 +64,7 @@ describe("shutdown mid-turn", () => {
 
     // The blocked sync call is answered rather than dropped on the floor.
     const response = await pending;
-    assert.match(
-      response.error?.message ?? "",
-      /shut down before the turn finished/,
-      JSON.stringify(response),
-    );
+    assert.match(toolError(response), /shut down before the turn finished/);
     await exited;
 
     // The SDK's close() resolves before the CLI is actually gone; the child

@@ -13,7 +13,6 @@
  * the turn is polled with `claude-result` and stopped with `claude-cancel`.
  */
 
-import readline from "node:readline";
 import {
   createEngine,
   DEFAULT_CANCEL_WATCHDOG_MS,
@@ -29,6 +28,12 @@ const CANCEL_WATCHDOG_MS =
   DEFAULT_CANCEL_WATCHDOG_MS;
 /** Upper bound on a clean shutdown before the process is torn down anyway. */
 const SHUTDOWN_GRACE_MS = 2_000;
+/**
+ * Longest accepted request line. A client that never sends a newline must not
+ * be able to grow the read buffer without bound; JSON-RPC over stdio is one
+ * message per line, and no legitimate one comes close.
+ */
+const MAX_LINE_CHARS = 10 * 1024 * 1024;
 
 const engine = createEngine({
   createRunner: createRunnerFactory({ query: await loadQuery() }),
@@ -39,7 +44,8 @@ const engine = createEngine({
 const INSTRUCTIONS = [
   "Claude Code is an external AI agent for second opinions, plan validation, and code review.",
   "Form your own analysis first, then consult it — and treat disagreement as signal, not noise.",
-  "`claude` defaults to read-only (no writes, no shell, no subagents); `writable: true` allows file writes and commands and must be explicitly scoped in the prompt.",
+  "`claude` defaults to read-only — no writes, no shell, no subagents through Claude Code's built-in tools; it runs as the operator's own Claude Code, so their MCP servers stay available and those may have side effects.",
+  "`writable: true` allows file writes and commands and must be explicitly scoped in the prompt.",
   "`async: true` on `claude` and `claude-reply` returns a sessionId immediately instead of blocking; poll with `claude-result` (use `wait: true` to block until done) and stop with `claude-cancel`.",
   "Session IDs work across `claude-reply`, `claude-result`, and `claude-cancel`.",
   "Pass `cwd` (repo root) so Claude reads the right project — the CLI loads that repo's own configuration and memory from there.",
@@ -116,35 +122,116 @@ const TOOLS = [
 // MCP Protocol — JSON-RPC over stdio
 // ---------------------------------------------------------------------------
 
-const mcpRl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-  terminal: false,
-});
-
 /** In-flight request handlers, so shutdown can let them answer first. */
 const inFlight = new Set();
 
-mcpRl.on("line", (line) => {
+/**
+ * Live `tools/call` requests, by JSON-RPC id, so `notifications/cancelled` can
+ * reach them: `cancelled` suppresses the response (per MCP the server should
+ * not answer a cancelled request), and `turn` — set only for the *synchronous*
+ * calls, where request and turn have the same lifetime — is the turn to stop.
+ * An async submission is cancelled through `claude-cancel` instead; killing it
+ * here would strand a session whose id the client never received.
+ */
+const liveCalls = new Map();
+
+// --- stdin: one JSON-RPC message per line, bounded ------------------------
+
+let shuttingDown = false;
+let stdinBuffer = "";
+/** Set while the remainder of an over-long line is being thrown away. */
+let discardingLine = false;
+
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", onStdinData);
+process.stdin.on("end", shutdown);
+
+function onStdinData(chunk) {
+  if (shuttingDown) return;
+
+  let data = chunk;
+  if (discardingLine) {
+    // Drop the rest of an over-long line without ever holding on to it.
+    const end = data.indexOf("\n");
+    if (end === -1) return;
+    discardingLine = false;
+    data = data.slice(end + 1);
+  }
+  stdinBuffer += data;
+
+  let newline;
+  while ((newline = stdinBuffer.indexOf("\n")) !== -1) {
+    const line = stdinBuffer.slice(0, newline);
+    stdinBuffer = stdinBuffer.slice(newline + 1);
+    acceptLine(line);
+    if (shuttingDown) return;
+  }
+
+  if (stdinBuffer.length > MAX_LINE_CHARS) {
+    stdinBuffer = "";
+    discardingLine = true;
+    sendError(null, -32700, `Request line exceeds ${MAX_LINE_CHARS} characters`);
+  }
+}
+
+function acceptLine(rawLine) {
+  const line = rawLine.replace(/\r$/, "").trim();
+  if (!line) return;
   // Swallow first, track second: an unhandled rejection from this derived
   // promise would take the process down, and shutdown awaits these.
   const pending = handleLine(line).catch(() => {});
   inFlight.add(pending);
   pending.finally(() => inFlight.delete(pending));
-});
+}
 
+/**
+ * Classify the envelope before dispatching on the method.
+ *
+ * A request carries an id and gets exactly one response; a notification carries
+ * none and gets nothing back, whatever its method. Dispatching on the method
+ * first answered id-less requests with id-less garbage.
+ */
 async function handleLine(line) {
   let message;
   try {
     message = JSON.parse(line);
   } catch {
-    return; // Not JSON — nothing to answer.
+    sendError(null, -32700, "Parse error");
+    return;
   }
 
+  if (Array.isArray(message)) {
+    sendError(null, -32600, "Batch requests are not supported");
+    return;
+  }
+  if (message === null || typeof message !== "object") {
+    sendError(null, -32600, "Invalid Request");
+    return;
+  }
+
+  const id = message.id === null ? undefined : message.id;
+  const method = typeof message.method === "string" ? message.method : null;
+  if (message.jsonrpc !== "2.0" || !method) {
+    sendError(id ?? null, -32600, "Invalid Request");
+    return;
+  }
+
+  if (method.startsWith("notifications/") || method === "initialized") {
+    if (id !== undefined) {
+      sendError(id, -32600, `${method} is a notification and must have no id`);
+      return;
+    }
+    handleNotification(method, message.params);
+    return;
+  }
+  // A request method sent without an id is a notification: there is nothing to
+  // answer, and starting a turn nobody can collect would only leak one.
+  if (id === undefined) return;
+
   try {
-    switch (message.method) {
+    switch (method) {
       case "initialize":
-        sendResponse(message.id, {
+        sendResponse(id, {
           protocolVersion: "2024-11-05",
           capabilities: { tools: {} },
           serverInfo: { name: "claude-code-mcp", version: VERSION },
@@ -152,33 +239,51 @@ async function handleLine(line) {
         });
         break;
 
-      case "initialized":
-      case "notifications/initialized":
+      case "ping":
+        sendResponse(id, {});
         break;
 
       case "tools/list":
-        sendResponse(message.id, { tools: TOOLS });
+        sendResponse(id, { tools: TOOLS });
         break;
 
       case "tools/call":
-        await handleToolCall(message);
+        await handleToolCall(id, message.params);
         break;
 
       default:
-        if (message.id !== undefined) {
-          sendError(message.id, -32601, "Method not found");
-        }
-      // Unknown notifications (no id) are ignored.
+        sendError(id, -32601, "Method not found");
     }
   } catch (e) {
+    // Not a tool failure (those answer with an isError result) — a fault in the
+    // protocol layer itself.
     console.error("Error processing message:", e);
-    if (message?.id !== undefined) sendError(message.id, -32603, e.message);
+    sendError(id, -32603, e.message);
   }
 }
 
-async function handleToolCall(message) {
-  const name = message.params?.name;
-  const args = message.params?.arguments ?? {};
+function handleNotification(method, params) {
+  if (method !== "notifications/cancelled") return; // including initialized
+  const call = liveCalls.get(params?.requestId);
+  if (!call) return;
+  call.cancelled = true;
+  cancelTurn(call.turn);
+}
+
+function cancelTurn(turn) {
+  if (!turn?.sessionId) return;
+  try {
+    engine.cancel({ sessionId: turn.sessionId });
+  } catch {
+    // The session is already gone; nothing to stop.
+  }
+}
+
+async function handleToolCall(id, params) {
+  const name = params?.name;
+  const args = params?.arguments ?? {};
+  const call = { cancelled: false, turn: null };
+  liveCalls.set(id, call);
 
   try {
     // --- Async submissions ---
@@ -187,31 +292,36 @@ async function handleToolCall(message) {
         name === "claude"
           ? await engine.submitStart(args)
           : await engine.submitReply(args);
-      sendJson(message.id, engine.snapshotForSubmission(turn));
+      sendJson(id, engine.snapshotForSubmission(turn));
       return;
     }
 
     // --- Session tools ---
     if (name === "claude-result") {
-      sendJson(message.id, await engine.result(args));
+      sendJson(id, await engine.result(args));
       return;
     }
     if (name === "claude-cancel") {
-      sendJson(message.id, engine.cancel(args));
+      sendJson(id, engine.cancel(args));
       return;
     }
 
     // --- Sync tool calls ---
-    let result;
+    let turn;
     if (name === "claude") {
-      result = await engine.runStart(args);
+      turn = await engine.submitStart(args);
     } else if (name === "claude-reply") {
-      result = await engine.runReply(args);
+      turn = await engine.submitReply(args);
     } else {
-      sendError(message.id, -32602, `Unknown tool: ${name}`);
+      sendError(id, -32602, `Unknown tool: ${name}`);
       return;
     }
+    call.turn = turn;
+    // A cancellation that arrived while the turn was starting up has no turn to
+    // stop yet; stop it now.
+    if (call.cancelled) cancelTurn(turn);
 
+    const result = await engine.awaitTurn(turn);
     const content = [{ type: "text", text: result.output }];
     if (result.sessionId) {
       content.push({
@@ -219,9 +329,14 @@ async function handleToolCall(message) {
         text: `\n[SESSION_ID: ${result.sessionId}]`,
       });
     }
-    sendResponse(message.id, { content });
+    sendResponse(id, { content });
   } catch (e) {
-    sendError(message.id, -32603, e.message);
+    // A tool that failed is a *result*, not a JSON-RPC error: the model that
+    // called it has to see why. Protocol errors are reserved for envelopes the
+    // server could not act on at all.
+    sendToolFailure(id, e.message);
+  } finally {
+    liveCalls.delete(id);
   }
 }
 
@@ -230,6 +345,7 @@ async function handleToolCall(message) {
 // ---------------------------------------------------------------------------
 
 function sendResponse(id, result) {
+  if (liveCalls.get(id)?.cancelled) return; // cancelled requests get no reply
   console.log(JSON.stringify({ jsonrpc: "2.0", id, result }));
 }
 
@@ -239,9 +355,17 @@ function sendJson(id, payload) {
   });
 }
 
+function sendToolFailure(id, message) {
+  sendResponse(id, {
+    content: [{ type: "text", text: message }],
+    isError: true,
+  });
+}
+
 function sendError(id, code, message) {
+  if (liveCalls.get(id)?.cancelled) return;
   console.log(
-    JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }),
+    JSON.stringify({ jsonrpc: "2.0", id: id ?? null, error: { code, message } }),
   );
 }
 
@@ -249,17 +373,21 @@ function sendError(id, code, message) {
 // Clean shutdown
 // ---------------------------------------------------------------------------
 
-let shuttingDown = false;
-
 /**
  * Close the live turns, then let the requests they were blocking answer before
  * the process goes away — a client waiting on a sync `claude` call gets a
- * JSON-RPC error instead of a silently dropped connection. Bounded, because a
- * child that refuses to die must not hold the server open.
+ * failed tool result instead of a silently dropped connection. Bounded, because
+ * a child that refuses to die must not hold the server open.
  */
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
+  // Stop reading *before* the in-flight set is snapshotted below: a request
+  // that started after that point would be waiting on an engine that has
+  // already been shut down.
+  process.stdin.off("data", onStdinData);
+  process.stdin.pause();
+  stdinBuffer = "";
 
   const grace = new Promise((resolve) => {
     setTimeout(resolve, SHUTDOWN_GRACE_MS).unref?.();
