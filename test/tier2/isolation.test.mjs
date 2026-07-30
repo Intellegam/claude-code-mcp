@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { systemText, toolResults } from "../helpers/mock-api.mjs";
 import {
   BRIDGE_MCP_TOOL,
+  DENIED_MCP_TOOL,
   MCP_TOOL_OUTPUT,
   PROJECT_MARKER,
   REPO_MCP_TOOL,
@@ -29,18 +30,14 @@ import {
  * lib/isolation.js before updating this snapshot.
  */
 const READ_ONLY_BUILTIN_TOOLS = [
-  "DesignSync",
   "Glob",
   "Grep",
   "Read",
   "ReportFindings",
   "Skill",
-  "TaskCreate",
   "TaskGet",
   "TaskList",
   "TaskOutput",
-  "TaskStop",
-  "TaskUpdate",
   "WebFetch",
   "WebSearch",
 ];
@@ -116,6 +113,8 @@ describe("MCP tool availability", () => {
       turns: [
         { tool: REPO_MCP_TOOL, input: {} },
         { text: "the repo tool ran" },
+        { tool: DENIED_MCP_TOOL, input: {} },
+        { text: "the operator's rule refused it" },
         { tool: BRIDGE_MCP_TOOL, input: {} },
         { text: "the bridge was refused" },
         { tool: BRIDGE_MCP_TOOL, input: {} },
@@ -127,6 +126,8 @@ describe("MCP tool availability", () => {
   after(async () => ctx?.stop());
 
   test("a benign MCP tool runs even in read-only mode", async () => {
+    // Read-only sets no permissionMode, so this tool has no rule and raises a
+    // permission request; `canUseTool` is what answers it headless.
     const response = await ctx.server.call(
       "claude",
       { prompt: "Use the repo tool.", cwd: ctx.sandbox.repo },
@@ -136,6 +137,25 @@ describe("MCP tool availability", () => {
     const results = toolResults(ctx.mock.mainCalls()[1]);
     assert.equal(results[0].isError, false, JSON.stringify(results));
     assert.match(results[0].text, new RegExp(MCP_TOOL_OUTPUT));
+  });
+
+  test("the operator's own deny rule beats the wrapper's approval", async () => {
+    // `canUseTool` runs *after* rule evaluation, so a project `permissions.deny`
+    // short-circuits before it. A wrapper that approved MCP tools terminally
+    // would be escalating privileges against the operator's settings.
+    const before = ctx.mock.mainCalls().length;
+    const response = await ctx.server.call(
+      "claude",
+      { prompt: "Use the deny tool.", cwd: ctx.sandbox.repo },
+      120000,
+    );
+    assert.equal(response.error, undefined, JSON.stringify(response.error));
+    const results = toolResults(ctx.mock.mainCalls()[before + 1]);
+    assert.equal(results[0].isError, true, JSON.stringify(results));
+    assert.ok(
+      !results[0].text.includes(MCP_TOOL_OUTPUT),
+      "the denied tool never ran",
+    );
   });
 
   for (const writable of [false, true]) {

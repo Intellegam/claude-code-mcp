@@ -15,22 +15,25 @@ import { startTier2 } from "../helpers/fixtures.mjs";
 const TARGET = "written.txt";
 const CONTENT = "written by the model\n";
 
-/** One `Write` call plus a closing sentence, per turn. */
-const writeScript = (sandbox) =>
-  ["I could not write the file.", "Wrote the file."].flatMap((closing) => [
+/** One `Write` call plus a closing sentence, per turn, then one `Read`. */
+const script = (sandbox) => [
+  ...["I could not write the file.", "Wrote the file."].flatMap((closing) => [
     {
       tool: "Write",
       input: { file_path: path.join(sandbox.repo, TARGET), content: CONTENT },
     },
     { text: closing },
-  ]);
+  ]),
+  { tool: "Read", input: { file_path: path.join(sandbox.repo, "sample.txt") } },
+  { text: "Read the sample file." },
+];
 
 describe("permission levels", () => {
   let ctx;
   let target;
 
   before(async () => {
-    ctx = await startTier2({ turns: writeScript });
+    ctx = await startTier2({ turns: script });
     target = path.join(ctx.sandbox.repo, TARGET);
   });
 
@@ -63,5 +66,21 @@ describe("permission levels", () => {
     const results = toolResults(ctx.mock.mainCalls()[before + 1]);
     assert.equal(results[0].isError, false, JSON.stringify(results));
     assert.equal(fs.readFileSync(target, "utf8"), CONTENT);
+  });
+
+  test("read-only mode still reads without stalling on a permission prompt", async () => {
+    // Read-only installs a `canUseTool` callback that denies anything not
+    // pre-approved. The read tools must not be reaching it in the first place.
+    const before = ctx.mock.mainCalls().length;
+    const response = await ctx.server.call(
+      "claude",
+      { prompt: "Read sample.txt", cwd: ctx.sandbox.repo },
+      120000,
+    );
+    assert.equal(response.error, undefined, JSON.stringify(response.error));
+
+    const results = toolResults(ctx.mock.mainCalls()[before + 1]);
+    assert.equal(results[0].isError, false, JSON.stringify(results));
+    assert.match(results[0].text, /the sample file contents/);
   });
 });

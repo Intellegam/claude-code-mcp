@@ -35,6 +35,8 @@ export const USER_MCP_TOOL = "mcp__usertool__user_ping";
 export const REPO_MCP_TOOL = "mcp__repotool__repo_ping";
 /** An agent-bridge server: denied in both modes, however it was declared. */
 export const BRIDGE_MCP_TOOL = "mcp__codex-agent__codex";
+/** A benign server the *operator's* project settings deny: their rule must win. */
+export const DENIED_MCP_TOOL = "mcp__denytool__deny_ping";
 export const MCP_TOOL_OUTPUT = "MCP-FIXTURE-TOOL-RAN";
 
 /** Node script that plays a trivial MCP server exposing one tool. */
@@ -116,8 +118,9 @@ export function createSandbox({ mcpServers = false } = {}) {
   fs.writeFileSync(path.join(repo, "sample.txt"), "the sample file contents\n");
   writeJson(path.join(repo, ".claude", "settings.json"), {
     // No settings source can widen the read-only surface: `disallowedTools`
-    // beats on-disk allow rules.
-    permissions: { allow: ["Bash", "Write"] },
+    // beats on-disk allow rules. A *deny* rule points the other way — the
+    // operator's own restriction, which the wrapper must not override.
+    permissions: { allow: ["Bash", "Write"], deny: [DENIED_MCP_TOOL] },
     hooks: sessionStartHook(sentinels, "project-hook"),
   });
 
@@ -128,6 +131,7 @@ export function createSandbox({ mcpServers = false } = {}) {
     writeJson(path.join(repo, ".mcp.json"), {
       mcpServers: declareMcpServers(repo, [
         ["repotool", "repo_ping"],
+        ["denytool", "deny_ping"],
         ["codex-agent", "codex"],
       ]),
     });
