@@ -98,7 +98,12 @@ const writeJson = (file, value) =>
  * that assert on them need the weight.
  */
 export function createSandbox({ mcpServers = false } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ccmcp-sandbox-"));
+  // Resolved eagerly: macOS temp dirs live behind the `/var` → `/private/var`
+  // symlink, and a permission rule written against the symlinked path never
+  // matches what the CLI checks.
+  const root = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "ccmcp-sandbox-")),
+  );
   const home = path.join(root, "home");
   const repo = path.join(root, "repo");
   const sentinels = path.join(root, "sentinels");
@@ -108,10 +113,7 @@ export function createSandbox({ mcpServers = false } = {}) {
 
   // --- outside the working directory ---
   // Files a consultation may be pointed at even though they are outside the
-  // session `cwd` (the repo). Rules must name the *resolved* path: macOS temp
-  // dirs live behind the `/var` → `/private/var` symlink, and a rule written
-  // against the symlinked path never matches what the CLI checks.
-  const realRoot = fs.realpathSync(root);
+  // session `cwd` (the repo).
   fs.writeFileSync(path.join(root, "outside.txt"), OUTSIDE_MARKER + "\n");
   fs.writeFileSync(path.join(root, "asked.txt"), ASKED_MARKER + "\n");
   fs.writeFileSync(path.join(root, "denied.txt"), DENIED_MARKER + "\n");
@@ -135,11 +137,16 @@ export function createSandbox({ mcpServers = false } = {}) {
     // No settings source can widen the read-only surface: `disallowedTools`
     // beats on-disk allow rules. A *deny* rule points the other way — the
     // operator's own restriction, which the wrapper must not override. An
-    // *ask* rule reserves a call for a human, which headless means deny.
+    // *ask* rule reserves a call for a human, which headless means deny for a
+    // direct read (an ask rule on an MCP tool is a documented limitation: its
+    // forced request is indistinguishable from an unruled one).
+    // `Read(//abs/path)` is the rule syntax for a filesystem-absolute path —
+    // the doubled slash is the anchor, not a join bug (`/path` would anchor
+    // relative to the settings file instead).
     permissions: {
       allow: ["Bash", "Write"],
-      deny: [DENIED_MCP_TOOL, `Read(/${realRoot}/denied.txt)`],
-      ask: [`Read(/${realRoot}/asked.txt)`],
+      deny: [DENIED_MCP_TOOL, `Read(/${root}/denied.txt)`],
+      ask: [`Read(/${root}/asked.txt)`, REPO_MCP_TOOL],
     },
     hooks: sessionStartHook(sentinels, "project-hook"),
   });
@@ -159,7 +166,6 @@ export function createSandbox({ mcpServers = false } = {}) {
 
   return {
     root,
-    realRoot,
     home,
     repo,
     firedSentinels: () => fs.readdirSync(sentinels).sort(),

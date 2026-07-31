@@ -10,7 +10,7 @@ describe("MCP protocol", () => {
     const response = await server.init();
     assert.equal(response.result.protocolVersion, "2024-11-05");
     assert.equal(response.result.serverInfo.name, "claude-code-mcp");
-    assert.equal(response.result.serverInfo.version, "0.1.0");
+    assert.equal(response.result.serverInfo.version, "0.1.1");
     assert.match(response.result.instructions, /second opinion/i);
     assert.match(response.result.instructions, /read-only/i);
   });

@@ -202,6 +202,16 @@ the tier-2 out-of-tree tests fail closed (reads lose access, nothing gains
 it) if the string ever changes. A `matchedAskRule` deny branch exists for the
 day the CLI starts sending the field.
 
+What ask rules can and cannot guarantee, all pinned by tier-2 tests: a direct
+out-of-tree read of an ask-ruled file is denied (above); an ask rule on an
+**MCP tool** is *not* honored — its forced request reaches the callback
+byte-identical to an unruled one, so the tool is approved like any other
+operator MCP tool; and a `Grep` sweep *discloses* an ask-ruled file's
+contents, because the CLI's per-file result filtering honors only `deny`
+rules (*verified*: a deny-ruled file is absent from sweep results, an
+ask-ruled one is present). Deny is the enforcement primitive; ask is
+best-effort, and the docs say so.
+
 ## Known limitations
 
 - Sessions are in-memory: after a restart, `claude-reply` needs an explicit `cwd`

@@ -126,8 +126,12 @@ describe("MCP tool availability", () => {
   after(async () => ctx?.stop());
 
   test("a benign MCP tool runs even in read-only mode", async () => {
-    // Read-only sets no permissionMode, so this tool has no rule and raises a
-    // permission request; `canUseTool` is what answers it headless.
+    // Read-only sets no permissionMode, so this tool raises a permission
+    // request; `canUseTool` is what answers it headless. The fixture puts a
+    // `permissions.ask` rule on this very tool: its forced request reaches
+    // the callback indistinguishable from an unruled one (no `decisionReason`,
+    // no `matchedAskRule` on the pinned CLI), so the tool still runs — the
+    // documented ask-on-MCP limitation, pinned here.
     const response = await ctx.server.call(
       "claude",
       { prompt: "Use the repo tool.", cwd: ctx.sandbox.repo },

@@ -313,11 +313,14 @@ describe("the read-only permission callback", () => {
     }
   });
 
-  test("an operator ask rule stays a human decision", async () => {
-    // Forward-compatibility branch: the pinned CLI never sends
-    // `matchedAskRule`, but when it starts to, the reservation must hold even
-    // if the request also carries the gate reason — for read tools and for
-    // the operator's MCP tools alike.
+  test("a matchedAskRule request is denied (forward-compatibility branch)", async () => {
+    // The pinned CLI never sends `matchedAskRule` — this branch is dormant
+    // and this test exercises the policy, NOT current CLI behavior. Real
+    // ask-rule behavior on the pinned CLI is pinned in tier 2: a direct read
+    // is denied via the missing gate reason, and an ask rule on an MCP tool
+    // is NOT honored (its request is indistinguishable from an unruled one).
+    // When the CLI starts sending the field, the reservation must hold even
+    // if the request also carries the gate reason.
     for (const tool of ["Read", "mcp__github__get_issue"]) {
       const decision = await callback()(
         tool,

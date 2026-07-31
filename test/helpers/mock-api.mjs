@@ -174,6 +174,19 @@ export function systemText(system) {
     .join("\n");
 }
 
+/** All tool_use blocks visible in a recorded call's messages. */
+export function toolUses(call) {
+  const uses = [];
+  for (const message of call.messages || []) {
+    const content = Array.isArray(message.content) ? message.content : [];
+    for (const block of content) {
+      if (block.type !== "tool_use") continue;
+      uses.push({ name: block.name, input: block.input });
+    }
+  }
+  return uses;
+}
+
 /** All tool_result payloads visible in a recorded call's messages. */
 export function toolResults(call) {
   const results = [];

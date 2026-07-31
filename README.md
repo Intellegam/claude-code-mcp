@@ -166,11 +166,16 @@ effects of their own. Be aware what that delegates: anything your Claude Code
 can read, the consultation can read — and what it reads may flow back into the
 *calling agent's* transcript. That second hop is part of the trust boundary.
 
-Your own permission rules still decide. A `permissions.deny` rule in your
-settings is respected even for the reads and MCP tools this wrapper otherwise
-approves — the consultation never gets more than you granted yourself — and a
-`permissions.ask` rule is denied rather than auto-approved: headless, there is
-no human to ask, and the reservation is yours to keep.
+Your own permission rules still decide — with one asymmetry to know about.
+**`deny` is the hard guarantee**: a `permissions.deny` rule is respected even
+for the reads and MCP tools this wrapper otherwise approves, including inside
+`Grep`/`Glob` sweeps, and it holds in writable mode too. **`ask` is
+best-effort**: in read-only mode a direct read of an ask-ruled file is denied
+rather than auto-approved (headless, there is no human to ask) — but an ask
+rule cannot be honored on MCP tools (the CLI surfaces their forced requests
+indistinguishably from unruled ones), a `Grep` sweep still discloses an
+ask-ruled file's contents, and writable mode bypasses ask rules entirely. Use
+`deny` for anything that must hold.
 
 The one thing always denied is an **agent-bridge MCP server**
 (`mcp__codex__*`, `mcp__codex-agent__*`, `mcp__claude-code-mcp__*`, …) — because
