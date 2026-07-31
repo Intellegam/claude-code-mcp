@@ -39,6 +39,11 @@ export const BRIDGE_MCP_TOOL = "mcp__codex-agent__codex";
 export const DENIED_MCP_TOOL = "mcp__denytool__deny_ping";
 export const MCP_TOOL_OUTPUT = "MCP-FIXTURE-TOOL-RAN";
 
+/** Contents of the out-of-tree fixture files (sandbox root, outside the repo). */
+export const OUTSIDE_MARKER = "OUTSIDE-FILE-CONTENTS-7Q";
+export const ASKED_MARKER = "ASKED-FILE-CONTENTS-3J";
+export const DENIED_MARKER = "DENIED-FILE-CONTENTS-9K";
+
 /** Node script that plays a trivial MCP server exposing one tool. */
 function mcpServerSource(serverName, toolName) {
   return `import readline from 'node:readline';
@@ -101,6 +106,16 @@ export function createSandbox({ mcpServers = false } = {}) {
   fs.mkdirSync(path.join(repo, ".claude"), { recursive: true });
   fs.mkdirSync(sentinels, { recursive: true });
 
+  // --- outside the working directory ---
+  // Files a consultation may be pointed at even though they are outside the
+  // session `cwd` (the repo). Rules must name the *resolved* path: macOS temp
+  // dirs live behind the `/var` → `/private/var` symlink, and a rule written
+  // against the symlinked path never matches what the CLI checks.
+  const realRoot = fs.realpathSync(root);
+  fs.writeFileSync(path.join(root, "outside.txt"), OUTSIDE_MARKER + "\n");
+  fs.writeFileSync(path.join(root, "asked.txt"), ASKED_MARKER + "\n");
+  fs.writeFileSync(path.join(root, "denied.txt"), DENIED_MARKER + "\n");
+
   // --- user level ---
   fs.writeFileSync(
     path.join(home, ".claude", "CLAUDE.md"),
@@ -119,8 +134,13 @@ export function createSandbox({ mcpServers = false } = {}) {
   writeJson(path.join(repo, ".claude", "settings.json"), {
     // No settings source can widen the read-only surface: `disallowedTools`
     // beats on-disk allow rules. A *deny* rule points the other way — the
-    // operator's own restriction, which the wrapper must not override.
-    permissions: { allow: ["Bash", "Write"], deny: [DENIED_MCP_TOOL] },
+    // operator's own restriction, which the wrapper must not override. An
+    // *ask* rule reserves a call for a human, which headless means deny.
+    permissions: {
+      allow: ["Bash", "Write"],
+      deny: [DENIED_MCP_TOOL, `Read(/${realRoot}/denied.txt)`],
+      ask: [`Read(/${realRoot}/asked.txt)`],
+    },
     hooks: sessionStartHook(sentinels, "project-hook"),
   });
 
@@ -139,6 +159,7 @@ export function createSandbox({ mcpServers = false } = {}) {
 
   return {
     root,
+    realRoot,
     home,
     repo,
     firedSentinels: () => fs.readdirSync(sentinels).sort(),

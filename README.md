@@ -159,13 +159,18 @@ publishing and interactive tools (`Task`/`Agent`, `Workflow`, `Cron*`,
 prompts — scope it explicitly in the prompt.
 
 Read-only restricts *mutation through Claude Code's built-in tools*, not
-visibility, and not your MCP servers: the agent can read outside `cwd`, and the
-MCP tools your configuration provides stay available in both modes and may have
-side effects of their own.
+visibility, and not your MCP servers: `Read`, `Glob` and `Grep` work outside
+`cwd` (out-of-tree permission requests are auto-approved), and the MCP tools
+your configuration provides stay available in both modes and may have side
+effects of their own. Be aware what that delegates: anything your Claude Code
+can read, the consultation can read — and what it reads may flow back into the
+*calling agent's* transcript. That second hop is part of the trust boundary.
 
 Your own permission rules still decide. A `permissions.deny` rule in your
-settings is respected even for the MCP tools this wrapper otherwise approves —
-the consultation never gets more than you granted yourself.
+settings is respected even for the reads and MCP tools this wrapper otherwise
+approves — the consultation never gets more than you granted yourself — and a
+`permissions.ask` rule is denied rather than auto-approved: headless, there is
+no human to ask, and the reservation is yours to keep.
 
 The one thing always denied is an **agent-bridge MCP server**
 (`mcp__codex__*`, `mcp__codex-agent__*`, `mcp__claude-code-mcp__*`, …) — because
