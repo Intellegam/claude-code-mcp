@@ -124,7 +124,7 @@ serve it:
 | `permissionMode` | unset | `bypassPermissions` + `allowDangerouslySkipPermissions` |
 | removed tools | `Write`, `Edit`, `NotebookEdit`, `Bash`, `Monitor`, `REPL`, `TaskCreate`, `TaskUpdate`, `TaskStop` + the always-blocked set | the always-blocked set |
 | settings | `disableSkillShellExecution` | — |
-| `canUseTool` | approves non-bridge MCP tools | not set (shadowed) |
+| `canUseTool` | approves non-bridge MCP tools and out-of-tree `Read`/`Glob`/`Grep` at the gate reason; `matchedAskRule` denies first | not set (shadowed) |
 
 Always blocked, in both modes: `Task`/`Agent` (init reports the first name, the
 model sees the second), `Workflow`, `CronCreate`, `CronDelete`, `CronList`,
