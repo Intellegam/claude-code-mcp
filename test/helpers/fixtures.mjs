@@ -97,7 +97,7 @@ const writeJson = (file, value) =>
  * MCP servers are opt-in: they cost a subprocess per turn, and only the suites
  * that assert on them need the weight.
  */
-export function createSandbox({ mcpServers = false } = {}) {
+export function createSandbox({ mcpServers = false, askRules = [] } = {}) {
   // Resolved eagerly: macOS temp dirs live behind the `/var` → `/private/var`
   // symlink, and a permission rule written against the symlinked path never
   // matches what the CLI checks.
@@ -146,7 +146,7 @@ export function createSandbox({ mcpServers = false } = {}) {
     permissions: {
       allow: ["Bash", "Write"],
       deny: [DENIED_MCP_TOOL, `Read(/${root}/denied.txt)`],
-      ask: [`Read(/${root}/asked.txt)`, REPO_MCP_TOOL],
+      ask: [`Read(/${root}/asked.txt)`, REPO_MCP_TOOL, ...askRules],
     },
     hooks: sessionStartHook(sentinels, "project-hook"),
   });
@@ -197,9 +197,10 @@ export function createSandbox({ mcpServers = false } = {}) {
 export async function startTier2({
   turns = [],
   mcpServers = false,
+  askRules = [],
   env = {},
 } = {}) {
-  const sandbox = createSandbox({ mcpServers });
+  const sandbox = createSandbox({ mcpServers, askRules });
   let mock = null;
   let server = null;
 

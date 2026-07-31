@@ -188,3 +188,65 @@ describe("permission levels", () => {
     assert.match(result.text, new RegExp(ASKED_MARKER));
   });
 });
+
+describe("a bare-name ask rule", () => {
+  let ctx;
+
+  before(async () => {
+    ctx = await startTier2({
+      askRules: ["Read"],
+      turns: (sandbox) => [
+        {
+          tool: "Read",
+          input: { file_path: path.join(sandbox.repo, "sample.txt") },
+        },
+        { text: "Tried the in-tree read." },
+        {
+          tool: "Read",
+          input: { file_path: path.join(sandbox.root, "outside.txt") },
+        },
+        { text: "Tried the out-of-tree read." },
+      ],
+    });
+  });
+
+  after(async () => ctx?.stop());
+
+  test("denies an in-tree read (unmarked request, generic deny)", async () => {
+    // The rule forces a prompt for every Read, even in-tree. *Verified:* with
+    // no tool-own decisionReason in play, the request arrives without
+    // `matchedAskRule` and lands in the generic deny.
+    const response = await ctx.server.call(
+      "claude",
+      { prompt: "Read sample.txt", cwd: ctx.sandbox.repo },
+      120000,
+    );
+    assert.equal(response.error, undefined, JSON.stringify(response.error));
+
+    const results = toolResults(ctx.mock.mainCalls()[1]);
+    assert.equal(results[0].isError, true, JSON.stringify(results));
+    assert.match(results[0].text, /not pre-approved/);
+    assert.doesNotMatch(results[0].text, /the sample file contents/);
+  });
+
+  test("denies an out-of-tree read despite the gate reason", async () => {
+    // The load-bearing case for the matchedAskRule branch: the request
+    // carries the out-of-tree gate reason (which the callback would approve)
+    // AND the ask rule. *Verified:* the CLI populates `matchedAskRule`
+    // exactly when an ask rule coincides with a tool-own decisionReason, and
+    // the branch must outrank the gate approval — without it, this read
+    // would be auto-approved against the operator's rule.
+    const before = ctx.mock.mainCalls().length;
+    const response = await ctx.server.call(
+      "claude",
+      { prompt: "Read the outside file", cwd: ctx.sandbox.repo },
+      120000,
+    );
+    assert.equal(response.error, undefined, JSON.stringify(response.error));
+
+    const results = toolResults(ctx.mock.mainCalls()[before + 1]);
+    assert.equal(results[0].isError, true, JSON.stringify(results));
+    assert.match(results[0].text, /human decision/);
+    assert.doesNotMatch(results[0].text, new RegExp(OUTSIDE_MARKER));
+  });
+});

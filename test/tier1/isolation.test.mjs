@@ -313,14 +313,14 @@ describe("the read-only permission callback", () => {
     }
   });
 
-  test("a matchedAskRule request is denied (forward-compatibility branch)", async () => {
-    // The pinned CLI never sends `matchedAskRule` — this branch is dormant
-    // and this test exercises the policy, NOT current CLI behavior. Real
-    // ask-rule behavior on the pinned CLI is pinned in tier 2: a direct read
-    // is denied via the missing gate reason, and an ask rule on an MCP tool
-    // is NOT honored (its request is indistinguishable from an unruled one).
-    // When the CLI starts sending the field, the reservation must hold even
-    // if the request also carries the gate reason.
+  test("a matchedAskRule request is denied even with the gate reason", async () => {
+    // The CLI populates `matchedAskRule` when an ask rule coincides with a
+    // tool-own decisionReason (tier 2 pins the real-CLI case: a bare `Read`
+    // ask rule on an out-of-tree read). The branch must outrank the gate
+    // approval — this is what keeps an ask-ruled out-of-tree read a human
+    // decision. Ask requests with no other reason arrive unmarked and are
+    // covered by the generic-deny test above; an ask rule on an MCP tool is
+    // NOT honored (its request is indistinguishable from an unruled one).
     for (const tool of ["Read", "mcp__github__get_issue"]) {
       const decision = await callback()(
         tool,

@@ -193,14 +193,16 @@ inside the session `cwd`; an out-of-tree `Read`/`Glob`/`Grep` raises a request
 whose `decisionReason` is "Path is outside allowed working directories"
 (*verified* identical for all three on the pinned CLI), and only that reason is
 approved — cross-repo visibility is the contract. A request forced by an
-operator `permissions.ask` rule arrives with *no* `decisionReason` and,
-despite the SDK types, no `matchedAskRule`; it therefore misses the gate and
-falls into the generic deny, which is the right outcome — ask reserves the
-call for a human, and headless there is none. The reason string is not
-contractual, but the SDK is exactly pinned, upgrades are release-gated, and
-the tier-2 out-of-tree tests fail closed (reads lose access, nothing gains
-it) if the string ever changes. A `matchedAskRule` deny branch exists for the
-day the CLI starts sending the field.
+operator `permissions.ask` rule *alone* arrives with *no* `decisionReason`;
+it therefore misses the gate and falls into the generic deny, which is the
+right outcome — ask reserves the call for a human, and headless there is
+none. When an ask rule coincides with a tool-own reason (a bare `Read` ask
+rule on an out-of-tree read), the CLI *does* populate `matchedAskRule`, and
+the callback's explicit ask branch denies before the gate can approve —
+without it, exactly that read would be auto-approved against the operator's
+rule. The reason string is not contractual, but the SDK is exactly pinned,
+upgrades are release-gated, and the tier-2 out-of-tree tests fail closed
+(reads lose access, nothing gains it) if the string ever changes.
 
 What ask rules can and cannot guarantee, all pinned by tier-2 tests: a direct
 out-of-tree read of an ask-ruled file is denied (above); an ask rule on an
