@@ -124,7 +124,7 @@ serve it:
 | `permissionMode` | unset | `bypassPermissions` + `allowDangerouslySkipPermissions` |
 | removed tools | `Write`, `Edit`, `NotebookEdit`, `Bash`, `Monitor`, `REPL`, `TaskCreate`, `TaskUpdate`, `TaskStop` + the always-blocked set | the always-blocked set |
 | settings | `disableSkillShellExecution` | — |
-| `canUseTool` | approves non-bridge MCP tools | not set (shadowed) |
+| `canUseTool` | approves non-bridge MCP tools and out-of-tree `Read`/`Glob`/`Grep` at the gate reason; `matchedAskRule` denies first | not set (shadowed) |
 
 Always blocked, in both modes: `Task`/`Agent` (init reports the first name, the
 model sees the second), `Workflow`, `CronCreate`, `CronDelete`, `CronList`,
@@ -179,13 +179,40 @@ this wrapper would be granting the consulted agent more than the operator
 granted themselves.
 
 Approving is `canUseTool`'s job, in read-only mode only. Read-only sets no
-`permissionMode`, so an MCP tool with no matching rule raises a permission
-request that nobody is there to answer; the callback approves non-bridge MCP
-tools and denies anything else rather than letting it hang. *Verified:* the
-callback runs only once the CLI actually needs a decision — `disallowedTools`,
-the operator's allow/deny rules and the hook have all been applied first, and a
-deny rule short-circuits without reaching it. That ordering is what keeps the
-operator's settings authoritative, and it is pinned by a tier-2 test.
+`permissionMode`, so a tool with no matching rule raises a permission request
+that nobody is there to answer; the callback approves non-bridge MCP tools and
+the built-in read tools at the out-of-tree gate, and denies anything else
+rather than letting it hang. *Verified:* the callback runs only once the CLI
+actually needs a decision — `disallowedTools`, the operator's allow/deny rules
+and the hook have all been applied first, and a deny rule short-circuits
+without reaching it. That ordering is what keeps the operator's settings
+authoritative, and it is pinned by a tier-2 test.
+
+The read-tool approval is gated, not blanket. The CLI auto-allows file reads
+inside the session `cwd`; an out-of-tree `Read`/`Glob`/`Grep` raises a request
+whose `decisionReason` is "Path is outside allowed working directories"
+(*verified* identical for all three on the pinned CLI), and only that reason is
+approved — cross-repo visibility is the contract. A request forced by an
+operator `permissions.ask` rule *alone* arrives with *no* `decisionReason`;
+it therefore misses the gate and falls into the generic deny, which is the
+right outcome — ask reserves the call for a human, and headless there is
+none. When an ask rule coincides with a tool-own reason (a bare `Read` ask
+rule on an out-of-tree read), the CLI *does* populate `matchedAskRule`, and
+the callback's explicit ask branch denies before the gate can approve —
+without it, exactly that read would be auto-approved against the operator's
+rule. The reason string is not contractual, but the SDK is exactly pinned,
+upgrades are release-gated, and the tier-2 out-of-tree tests fail closed
+(reads lose access, nothing gains it) if the string ever changes.
+
+What ask rules can and cannot guarantee, all pinned by tier-2 tests: a direct
+out-of-tree read of an ask-ruled file is denied (above); an ask rule on an
+**MCP tool** is *not* honored — its forced request reaches the callback
+byte-identical to an unruled one, so the tool is approved like any other
+operator MCP tool; and a `Grep` sweep *discloses* an ask-ruled file's
+contents, because the CLI's per-file result filtering honors only `deny`
+rules (*verified*: a deny-ruled file is absent from sweep results, an
+ask-ruled one is present). Deny is the enforcement primitive; ask is
+best-effort, and the docs say so.
 
 ## Known limitations
 

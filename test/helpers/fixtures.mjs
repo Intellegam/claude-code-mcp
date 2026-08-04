@@ -39,6 +39,11 @@ export const BRIDGE_MCP_TOOL = "mcp__codex-agent__codex";
 export const DENIED_MCP_TOOL = "mcp__denytool__deny_ping";
 export const MCP_TOOL_OUTPUT = "MCP-FIXTURE-TOOL-RAN";
 
+/** Contents of the out-of-tree fixture files (sandbox root, outside the repo). */
+export const OUTSIDE_MARKER = "OUTSIDE-FILE-CONTENTS-7Q";
+export const ASKED_MARKER = "ASKED-FILE-CONTENTS-3J";
+export const DENIED_MARKER = "DENIED-FILE-CONTENTS-9K";
+
 /** Node script that plays a trivial MCP server exposing one tool. */
 function mcpServerSource(serverName, toolName) {
   return `import readline from 'node:readline';
@@ -92,14 +97,26 @@ const writeJson = (file, value) =>
  * MCP servers are opt-in: they cost a subprocess per turn, and only the suites
  * that assert on them need the weight.
  */
-export function createSandbox({ mcpServers = false } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ccmcp-sandbox-"));
+export function createSandbox({ mcpServers = false, askRules = [] } = {}) {
+  // Resolved eagerly: macOS temp dirs live behind the `/var` → `/private/var`
+  // symlink, and a permission rule written against the symlinked path never
+  // matches what the CLI checks.
+  const root = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "ccmcp-sandbox-")),
+  );
   const home = path.join(root, "home");
   const repo = path.join(root, "repo");
   const sentinels = path.join(root, "sentinels");
   fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
   fs.mkdirSync(path.join(repo, ".claude"), { recursive: true });
   fs.mkdirSync(sentinels, { recursive: true });
+
+  // --- outside the working directory ---
+  // Files a consultation may be pointed at even though they are outside the
+  // session `cwd` (the repo).
+  fs.writeFileSync(path.join(root, "outside.txt"), OUTSIDE_MARKER + "\n");
+  fs.writeFileSync(path.join(root, "asked.txt"), ASKED_MARKER + "\n");
+  fs.writeFileSync(path.join(root, "denied.txt"), DENIED_MARKER + "\n");
 
   // --- user level ---
   fs.writeFileSync(
@@ -119,8 +136,18 @@ export function createSandbox({ mcpServers = false } = {}) {
   writeJson(path.join(repo, ".claude", "settings.json"), {
     // No settings source can widen the read-only surface: `disallowedTools`
     // beats on-disk allow rules. A *deny* rule points the other way — the
-    // operator's own restriction, which the wrapper must not override.
-    permissions: { allow: ["Bash", "Write"], deny: [DENIED_MCP_TOOL] },
+    // operator's own restriction, which the wrapper must not override. An
+    // *ask* rule reserves a call for a human, which headless means deny for a
+    // direct read (an ask rule on an MCP tool is a documented limitation: its
+    // forced request is indistinguishable from an unruled one).
+    // `Read(//abs/path)` is the rule syntax for a filesystem-absolute path —
+    // the doubled slash is the anchor, not a join bug (`/path` would anchor
+    // relative to the settings file instead).
+    permissions: {
+      allow: ["Bash", "Write"],
+      deny: [DENIED_MCP_TOOL, `Read(/${root}/denied.txt)`],
+      ask: [`Read(/${root}/asked.txt)`, REPO_MCP_TOOL, ...askRules],
+    },
     hooks: sessionStartHook(sentinels, "project-hook"),
   });
 
@@ -170,9 +197,10 @@ export function createSandbox({ mcpServers = false } = {}) {
 export async function startTier2({
   turns = [],
   mcpServers = false,
+  askRules = [],
   env = {},
 } = {}) {
-  const sandbox = createSandbox({ mcpServers });
+  const sandbox = createSandbox({ mcpServers, askRules });
   let mock = null;
   let server = null;
 

@@ -2,7 +2,9 @@ import test, { describe } from "node:test";
 import assert from "node:assert/strict";
 import {
   ALWAYS_DISALLOWED_TOOLS,
+  ASK_RULE_DENY_MESSAGE,
   BRIDGE_DENY_MESSAGE,
+  UNGRANTED_DENY_MESSAGE,
   buildChildEnv,
   buildQueryOptions,
 } from "../../lib/isolation.js";
@@ -284,5 +286,59 @@ describe("the read-only permission callback", () => {
     const decision = await callback()("WebFetch", {}, {});
     assert.equal(decision.behavior, "deny");
     assert.match(decision.message, /not pre-approved/);
+  });
+
+  // The exact reason string the pinned CLI attaches to the out-of-tree gate,
+  // as captured from a real permission request in the tier-2 suite.
+  const GATE = { decisionReason: "Path is outside allowed working directories" };
+
+  test("the built-in read tools are approved at the out-of-tree gate", async () => {
+    // An out-of-tree Read/Glob/Grep raises a permission request the operator's
+    // rules did not decide; the visibility contract says approve it.
+    for (const tool of ["Read", "Glob", "Grep"]) {
+      const input = { file_path: "/somewhere/else/entirely" };
+      const decision = await callback()(tool, input, GATE);
+      assert.equal(decision.behavior, "allow", tool);
+      assert.deepEqual(decision.updatedInput, input, tool);
+    }
+  });
+
+  test("a read tool asking for any other reason is denied", async () => {
+    // An ask-forced request arrives with no `decisionReason` at all; a future
+    // tool-own reason (a safety check, say) deserves deny-by-default too.
+    for (const context of [{}, { decisionReason: "safety check tripped" }]) {
+      const decision = await callback()("Read", {}, context);
+      assert.equal(decision.behavior, "deny", JSON.stringify(context));
+      assert.equal(decision.message, UNGRANTED_DENY_MESSAGE);
+    }
+  });
+
+  test("a matchedAskRule request is denied even with the gate reason", async () => {
+    // The CLI populates `matchedAskRule` when an ask rule coincides with a
+    // tool-own decisionReason (tier 2 pins the real-CLI case: a bare `Read`
+    // ask rule on an out-of-tree read). The branch must outrank the gate
+    // approval — this is what keeps an ask-ruled out-of-tree read a human
+    // decision. Ask requests with no other reason arrive unmarked and are
+    // covered by the generic-deny test above; an ask rule on an MCP tool is
+    // NOT honored (its request is indistinguishable from an unruled one).
+    for (const tool of ["Read", "mcp__github__get_issue"]) {
+      const decision = await callback()(
+        tool,
+        {},
+        { ...GATE, matchedAskRule: { source: "userSettings", toolName: tool } },
+      );
+      assert.equal(decision.behavior, "deny", tool);
+      assert.equal(decision.message, ASK_RULE_DENY_MESSAGE, tool);
+    }
+  });
+
+  test("a bridge tool is denied even when an ask rule matched", async () => {
+    const decision = await callback()(
+      "mcp__codex__codex",
+      {},
+      { matchedAskRule: { source: "userSettings", toolName: "mcp__codex__codex" } },
+    );
+    assert.equal(decision.behavior, "deny");
+    assert.equal(decision.message, BRIDGE_DENY_MESSAGE);
   });
 });
