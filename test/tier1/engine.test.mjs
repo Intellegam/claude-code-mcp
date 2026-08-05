@@ -39,7 +39,7 @@ function fakeRunners(script) {
       getStderr: () => runner.stderr,
 
       // --- event drivers ---
-      init: (sessionId, model) => runner.events.onInit(sessionId, model),
+      init: (sessionId) => runner.events.onInit(sessionId),
       model: (model) => runner.events.onModel(model),
       text: (text) => runner.events.onText(text),
       result: (patch = {}) =>
@@ -202,12 +202,14 @@ describe("terminal-state precedence", () => {
     runners[0].result({ isError: true, text: "second" });
     runners[0].done(new Error("late explosion"));
     runners[0].init("s-hijack");
+    runners[0].model("model-hijack");
 
     const snap = await engine.result({ sessionId: turn.sessionId });
     assert.equal(snap.status, "succeeded");
     assert.equal(snap.output, "first");
     assert.equal(snap.finishedAt, settledAt);
     assert.equal(snap.sessionId, "s-1");
+    assert.equal(snap.model, null, "a settled turn's model cannot be rewritten");
   });
 });
 
@@ -422,39 +424,30 @@ describe("sessions", () => {
 });
 
 describe("model reporting", () => {
-  test("each turn reports the model its own init announced", async () => {
-    const createRunner = fakeRunners((runner, index) =>
-      runner.init("s-1", index === 0 ? "model-old" : "model-new"),
-    );
+  test("the reported model follows the CLI's announcements, per turn", async () => {
+    const createRunner = fakeRunners((runner, index) => {
+      runner.model(index === 0 ? "model-old" : "model-new");
+      runner.init("s-1");
+    });
     const engine = createEngine({ createRunner, timeoutMs: 60_000 });
 
-    const turn = await engine.submitStart({ prompt: "hi", cwd: "/repo" });
+    // Turn 1: a mid-turn fallback overrides what init resolved.
+    await engine.submitStart({ prompt: "hi", cwd: "/repo" });
+    createRunner.created[0].model("model-fallback");
     createRunner.created[0].result({ text: "ok" });
-    const result = await engine.awaitTurn(turn);
-    assert.equal(result.model, "model-old");
-    assert.equal((await settled(engine, "s-1")).model, "model-old");
+    assert.equal((await settled(engine, "s-1")).model, "model-fallback");
 
+    // Turn 2: a fresh turn reports its own announcement, not its predecessor's.
     await engine.submitReply({ sessionId: "s-1", prompt: "again" });
     createRunner.created[1].result({ text: "resumed" });
     assert.equal((await settled(engine, "s-1")).model, "model-new");
   });
 
-  test("a mid-turn fallback overrides the model init resolved", async () => {
-    const createRunner = fakeRunners((runner) =>
-      runner.init("s-1", "model-configured"),
-    );
-    const engine = createEngine({ createRunner, timeoutMs: 60_000 });
-
-    await engine.submitStart({ prompt: "hi", cwd: "/repo" });
-    createRunner.created[0].model("model-fallback");
-    createRunner.created[0].result({ text: "ok" });
-    assert.equal((await settled(engine, "s-1")).model, "model-fallback");
-  });
-
   test("a turn that failed after init still reports its model", async () => {
-    const createRunner = fakeRunners((runner) =>
-      runner.init("s-1", "claude-test-model"),
-    );
+    const createRunner = fakeRunners((runner) => {
+      runner.model("claude-test-model");
+      runner.init("s-1");
+    });
     const engine = createEngine({ createRunner, timeoutMs: 60_000 });
 
     await engine.submitStart({ prompt: "hi", cwd: "/repo" });

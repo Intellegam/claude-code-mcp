@@ -62,13 +62,9 @@ describe("the operator's own configuration is what loads", () => {
     );
     assert.equal(response.error, undefined, JSON.stringify(response.error));
     assert.match(response.result.content[0].text, /isolation check done/);
-    // The only place the *real* SDK is proven to emit `model` on system/init;
-    // the tier-1 mock can't.
-    assert.match(
-      response.result.content[1].text,
-      /\[MODEL: [^\]\s]+\]/,
-      "the sync trailer reports the model from system/init",
-    );
+    // "mock-model" is the mock API's assistant-message model: through the real
+    // CLI, the trailer follows what actually served the turn.
+    assert.match(response.result.content[1].text, /\[MODEL: mock-model\]/);
   });
 
   test("both the user and the project hook ran", () => {

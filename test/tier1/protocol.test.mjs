@@ -1,6 +1,11 @@
 import test, { after, describe } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { sleep, spawnServer, toolError } from "../helpers/harness.mjs";
+
+const PACKAGE_VERSION = JSON.parse(
+  readFileSync(new URL("../../package.json", import.meta.url)),
+).version;
 
 describe("MCP protocol", () => {
   const server = spawnServer();
@@ -10,7 +15,8 @@ describe("MCP protocol", () => {
     const response = await server.init();
     assert.equal(response.result.protocolVersion, "2024-11-05");
     assert.equal(response.result.serverInfo.name, "claude-code-mcp");
-    assert.equal(response.result.serverInfo.version, "0.1.2");
+    // Against package.json, so server.js's VERSION drifting is what fails.
+    assert.equal(response.result.serverInfo.version, PACKAGE_VERSION);
     assert.match(response.result.instructions, /second opinion/i);
     assert.match(response.result.instructions, /read-only/i);
   });

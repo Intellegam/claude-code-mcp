@@ -19,7 +19,9 @@ describe("sync tool calls", () => {
     const texts = response.result.content.map((c) => c.text);
     assert.match(texts[0], /Mock response to: hello/);
     assert.match(texts[1], /\[SESSION_ID: mock-/);
-    assert.match(texts[1], /\[MODEL: mock-model-1\]/);
+    // mock-model-2 is what assistant messages carry: proof the trailer follows
+    // the serving model, not just init's resolution (which says mock-model-1).
+    assert.match(texts[1], /\[MODEL: mock-model-2\]/);
   });
 
   test("the prompt stream is held open until the turn settles", async () => {

@@ -102,10 +102,10 @@ Test seams (read from the *server's* env, never from tool arguments):
 
 ## Releasing
 
-1. Bump the version everywhere it lives, in sync: `package.json`,
-   `package-lock.json` (`npm install --package-lock-only`), `VERSION` in
-   `server.js`, the `#v{version}` tag pin in `README.md`'s install snippet, and
-   the expected version in `test/tier1/protocol.test.mjs`.
+1. Bump the version in sync: `package.json` (+ lockfile via
+   `npm install --package-lock-only`), `VERSION` in `server.js`, and the
+   `#v{version}` tag pin in `README.md`'s install snippet. The protocol test
+   asserts server.js against package.json, so drift fails the suite.
 2. `git tag v{version}`.
 3. Update the `~/.codex/config.toml` entry if it pins a tag — the documented
    snippet does not.

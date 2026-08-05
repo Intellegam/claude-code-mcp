@@ -153,9 +153,10 @@ surface than a sealed sandbox, and the startup cost of your MCP servers on every
 turn — in exchange the consultation has the context and tooling you do.
 
 That includes the **model**: consultations use your `model` setting
-(`~/.claude/settings.json` or project settings), else the CLI default. A model
-picked in an interactive session's selector is session state, not
-configuration, and does not apply here.
+(`~/.claude/settings.json` or project settings) or an inherited
+`ANTHROPIC_MODEL` env var, else the CLI default. A model picked in an
+interactive session's selector is session state, not configuration, and does
+not apply here.
 
 Read-only is the default: no `Write`, `Edit`, `NotebookEdit`, `Bash`, `Monitor`,
 `REPL` or `TaskCreate`/`TaskUpdate`/`TaskStop`, and inline `!` shell commands in
