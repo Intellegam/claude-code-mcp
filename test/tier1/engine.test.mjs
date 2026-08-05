@@ -40,6 +40,7 @@ function fakeRunners(script) {
 
       // --- event drivers ---
       init: (sessionId) => runner.events.onInit(sessionId),
+      model: (model) => runner.events.onModel(model),
       text: (text) => runner.events.onText(text),
       result: (patch = {}) =>
         runner.events.onResult({
@@ -201,12 +202,14 @@ describe("terminal-state precedence", () => {
     runners[0].result({ isError: true, text: "second" });
     runners[0].done(new Error("late explosion"));
     runners[0].init("s-hijack");
+    runners[0].model("model-hijack");
 
     const snap = await engine.result({ sessionId: turn.sessionId });
     assert.equal(snap.status, "succeeded");
     assert.equal(snap.output, "first");
     assert.equal(snap.finishedAt, settledAt);
     assert.equal(snap.sessionId, "s-1");
+    assert.equal(snap.model, null, "a settled turn's model cannot be rewritten");
   });
 });
 
@@ -417,5 +420,44 @@ describe("sessions", () => {
     assert.equal(snap.status, "failed");
     assert.equal(snap.error.source, "shutdown");
     await pending;
+  });
+});
+
+describe("model reporting", () => {
+  test("the reported model follows the CLI's announcements, per turn", async () => {
+    const createRunner = fakeRunners((runner, index) => {
+      runner.model(index === 0 ? "model-old" : "model-new");
+      runner.init("s-1");
+    });
+    const engine = createEngine({ createRunner, timeoutMs: 60_000 });
+
+    // Turn 1: a mid-turn fallback overrides what init resolved.
+    await engine.submitStart({ prompt: "hi", cwd: "/repo" });
+    createRunner.created[0].model("model-fallback");
+    createRunner.created[0].result({ text: "ok" });
+    assert.equal((await settled(engine, "s-1")).model, "model-fallback");
+
+    // Turn 2: a fresh turn reports its own announcement, not its predecessor's.
+    await engine.submitReply({ sessionId: "s-1", prompt: "again" });
+    createRunner.created[1].result({ text: "resumed" });
+    assert.equal((await settled(engine, "s-1")).model, "model-new");
+  });
+
+  test("a turn that failed after init still reports its model", async () => {
+    const createRunner = fakeRunners((runner) => {
+      runner.model("claude-test-model");
+      runner.init("s-1");
+    });
+    const engine = createEngine({ createRunner, timeoutMs: 60_000 });
+
+    await engine.submitStart({ prompt: "hi", cwd: "/repo" });
+    createRunner.created[0].result({
+      isError: true,
+      subtype: "error_during_execution",
+      errors: ["boom"],
+    });
+    const snap = await settled(engine, "s-1");
+    assert.equal(snap.status, "failed");
+    assert.equal(snap.model, "claude-test-model");
   });
 });

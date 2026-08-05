@@ -33,7 +33,7 @@ install.
 ```toml
 [mcp_servers.claude-agent]
 command = "npx"
-args = ["-y", "github:Intellegam/claude-code-mcp#v0.1.1"]
+args = ["-y", "github:Intellegam/claude-code-mcp#v0.1.2"]
 ```
 
 Or from a local checkout:
@@ -72,6 +72,11 @@ Parameters: `prompt` (required), `cwd`, `writable` (default false), `async`
 Pass `cwd` — it is the repo Claude reads, and the CLI loads that repo's own
 configuration and `CLAUDE.md` from there.
 
+A successful synchronous `claude` or `claude-reply` call appends a trailer
+block: `[SESSION_ID: …]` and `[MODEL: …]`, the model that served the turn —
+resolved at initialization, updated if the CLI falls back mid-turn. The model
+is recorded per turn, so a resumed session may report a different one.
+
 ### `claude-reply` — continue a session
 
 ```
@@ -97,8 +102,8 @@ claude-result({ sessionId: "e0dbaa09-…" })              // immediate check
 claude-result({ sessionId: "e0dbaa09-…", wait: true })  // block until done
 ```
 
-Returns the latest turn's snapshot: `status`, `done`, `output`, `error`,
-`elapsed`, …
+Returns the latest turn's snapshot: `status`, `done`, `output`, `model`,
+`error`, `elapsed`, … (`model` is `null` until the turn has initialized).
 
 ### `claude-cancel` — cancel the active turn
 
@@ -148,6 +153,12 @@ memory files, hooks, skills, plugins and MCP servers. The trade is a wider tool
 surface than a sealed sandbox, and the startup cost of your MCP servers on every
 turn — in exchange the consultation has the context and tooling you do.
 
+That includes the **model**: consultations use your `model` setting
+(`~/.claude/settings.json` or project settings) or an inherited
+`ANTHROPIC_MODEL` env var, else the CLI default — whatever an interactive
+client did or didn't persist there. The `[MODEL: …]` trailer tells you what a
+turn actually ran.
+
 Read-only is the default: no `Write`, `Edit`, `NotebookEdit`, `Bash`, `Monitor`,
 `REPL` or `TaskCreate`/`TaskUpdate`/`TaskStop`, and inline `!` shell commands in
 skills are disabled too. Delegation, scheduling, worktree switching, messaging,
@@ -184,7 +195,9 @@ The exact matching rule is in DESIGN.md → Trust model.
 
 The child's environment is your environment minus `CLAUDECODE` and
 `CLAUDE_CODE_*` (nested-session markers that change CLI behaviour;
-`CLAUDE_CODE_OAUTH_TOKEN` is kept) and minus the transport/credential unit
+`CLAUDE_CODE_OAUTH_TOKEN` and the `CLAUDE_CODE_USE_BEDROCK`/
+`CLAUDE_CODE_USE_VERTEX` backend switches are kept) and minus the
+transport/credential unit
 `ANTHROPIC_BASE_URL`, `ANTHROPIC_UNIX_SOCKET`, `ANTHROPIC_AUTH_TOKEN` and
 `ANTHROPIC_CUSTOM_HEADERS` — a gateway credential must not outlive the gateway
 address it belongs to. `ANTHROPIC_API_KEY` is kept, and a gateway configured

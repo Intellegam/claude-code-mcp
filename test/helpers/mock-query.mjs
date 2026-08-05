@@ -173,6 +173,7 @@ export function query({ prompt, options = {} }) {
       type: "system",
       subtype: "init",
       session_id: sessionId,
+      model: "mock-model-1",
       cwd: options.cwd,
       tools: ["Read", "Grep", "Glob"],
       mcp_servers: [],
@@ -199,6 +200,7 @@ export function query({ prompt, options = {} }) {
         session_id: sessionId,
         message: {
           role: "assistant",
+          model: "mock-model-2",
           content: [
             {
               type: "text",
@@ -248,6 +250,7 @@ export function query({ prompt, options = {} }) {
       session_id: sessionId,
       message: {
         role: "assistant",
+        model: "mock-model-2",
         content: [{ type: "text", text: `Mock response to: ${cleanPrompt}` }],
       },
     });

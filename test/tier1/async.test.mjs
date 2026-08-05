@@ -27,6 +27,8 @@ describe("async submissions", () => {
 
     assert.ok(submitted.sessionId, "sessionId available immediately");
     assert.equal(submitted.toolName, "claude");
+    // Init's resolution — the assistant message (and its model) come later.
+    assert.equal(submitted.model, "mock-model-1");
     assert.equal(submitted.done, false);
     assert.equal(submitted.status, "running");
     assert.equal(submitted.output, "");
@@ -45,6 +47,7 @@ describe("async submissions", () => {
     assert.equal(final.status, "succeeded");
     assert.equal(final.done, true);
     assert.equal(final.sessionId, submitted.sessionId);
+    assert.equal(final.model, "mock-model-2");
     assert.match(final.output, /Mock response to: async hello/);
     assert.equal(final.error, null);
     assert.match(final.finishedAt, /^\d{4}-\d{2}-\d{2}T/);
