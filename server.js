@@ -377,10 +377,11 @@ async function handleToolCall(id, params) {
     const result = await engine.awaitTurn(turn);
     const content = [{ type: "text", text: result.output }];
     if (result.sessionId) {
-      const model = result.model ? `\n[MODEL: ${result.model}]` : "";
       content.push({
         type: "text",
-        text: `\n[SESSION_ID: ${result.sessionId}]${model}`,
+        text: `\n[SESSION_ID: ${result.sessionId}]${
+          result.model ? `\n[MODEL: ${result.model}]` : ""
+        }`,
       });
     }
     sendResponse(id, { content }, call);

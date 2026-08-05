@@ -200,6 +200,7 @@ export function query({ prompt, options = {} }) {
         session_id: sessionId,
         message: {
           role: "assistant",
+          model: "mock-model-1",
           content: [
             {
               type: "text",
@@ -249,6 +250,7 @@ export function query({ prompt, options = {} }) {
       session_id: sessionId,
       message: {
         role: "assistant",
+        model: "mock-model-1",
         content: [{ type: "text", text: `Mock response to: ${cleanPrompt}` }],
       },
     });

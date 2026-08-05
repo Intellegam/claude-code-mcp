@@ -62,8 +62,8 @@ describe("the operator's own configuration is what loads", () => {
     );
     assert.equal(response.error, undefined, JSON.stringify(response.error));
     assert.match(response.result.content[0].text, /isolation check done/);
-    // The model the CLI resolved for the turn is reported next to the session
-    // id — whatever it resolves to in the sandbox, it must be present.
+    // The only place the *real* SDK is proven to emit `model` on system/init;
+    // the tier-1 mock can't.
     assert.match(
       response.result.content[1].text,
       /\[MODEL: [^\]\s]+\]/,

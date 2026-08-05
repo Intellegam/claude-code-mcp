@@ -102,7 +102,12 @@ Test seams (read from the *server's* env, never from tool arguments):
 
 ## Releasing
 
-1. Bump `version` in `package.json` and `VERSION` in `server.js` (keep in sync).
+1. Bump the version everywhere it lives, in sync: `package.json`,
+   `package-lock.json` (`npm install --package-lock-only`), `VERSION` in
+   `server.js`, the `#v{version}` tag pin in `README.md`'s install snippet, and
+   the expected version in `test/tier1/protocol.test.mjs`.
 2. `git tag v{version}`.
 3. Update the `~/.codex/config.toml` entry if it pins a tag — the documented
    snippet does not.
+4. In agent-plugins: bump the `claude-code` plugin's `.mcp.json` tag pin and
+   `.codex-plugin/plugin.json` version, or consumers keep the old build.

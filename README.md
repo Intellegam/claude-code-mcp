@@ -72,9 +72,9 @@ Parameters: `prompt` (required), `cwd`, `writable` (default false), `async`
 Pass `cwd` — it is the repo Claude reads, and the CLI loads that repo's own
 configuration and `CLAUDE.md` from there.
 
-A successful synchronous call returns the answer followed by a trailer block:
-`[SESSION_ID: …]` and `[MODEL: …]` — the model the CLI resolved for the turn,
-as reported at turn initialization. Failures carry only the error text.
+A successful synchronous call appends a trailer block: `[SESSION_ID: …]` and
+`[MODEL: …]`, the model that served the turn — resolved at initialization,
+updated if the CLI falls back to another model mid-turn.
 
 ### `claude-reply` — continue a session
 
@@ -152,13 +152,10 @@ memory files, hooks, skills, plugins and MCP servers. The trade is a wider tool
 surface than a sealed sandbox, and the startup cost of your MCP servers on every
 turn — in exchange the consultation has the context and tooling you do.
 
-That includes the **model**: a consultation runs whatever your Claude Code
-resolves as its default — the `model` setting in `~/.claude/settings.json` (or a
-project settings file), falling back to the CLI default. A model picked in an
-interactive session's model selector is session state, not configuration, and
-does not apply here; set `model` in settings to change what consultations use.
-Every response reports the model that actually served the turn (the `[MODEL: …]`
-trailer on sync calls, the `model` field on snapshots).
+That includes the **model**: consultations use your `model` setting
+(`~/.claude/settings.json` or project settings), else the CLI default. A model
+picked in an interactive session's selector is session state, not
+configuration, and does not apply here.
 
 Read-only is the default: no `Write`, `Edit`, `NotebookEdit`, `Bash`, `Monitor`,
 `REPL` or `TaskCreate`/`TaskUpdate`/`TaskStop`, and inline `!` shell commands in

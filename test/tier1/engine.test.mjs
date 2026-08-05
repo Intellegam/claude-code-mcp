@@ -40,6 +40,7 @@ function fakeRunners(script) {
 
       // --- event drivers ---
       init: (sessionId, model) => runner.events.onInit(sessionId, model),
+      model: (model) => runner.events.onModel(model),
       text: (text) => runner.events.onText(text),
       result: (patch = {}) =>
         runner.events.onResult({
@@ -421,64 +422,49 @@ describe("sessions", () => {
 });
 
 describe("model reporting", () => {
-  test("the init model reaches snapshots and the sync result", async () => {
-    const createRunner = fakeRunners((runner) =>
-      runner.init("s-1", "claude-test-model"),
-    );
-    const engine = createEngine({ createRunner, timeoutMs: 60_000 });
-
-    const turn = await engine.submitStart({ prompt: "hi", cwd: "/repo" });
-    createRunner.created[0].result({ text: "ok" });
-
-    const result = await engine.awaitTurn(turn);
-    assert.equal(result.model, "claude-test-model");
-    const snap = await settled(engine, "s-1");
-    assert.equal(snap.model, "claude-test-model");
-  });
-
-  test("a turn that never initialized reports model: null", async () => {
-    const createRunner = fakeRunners((runner) => runner.done());
-    const engine = createEngine({ createRunner, timeoutMs: 60_000 });
-
-    const turn = await engine.submitStart({ prompt: "hi", cwd: "/repo" });
-    const snap = await settled(engine, turn.sessionId ?? undefined).catch(
-      () => null,
-    );
-    // Pre-init failures have no session to snapshot through; the turn record
-    // itself is the observable.
-    assert.equal(turn.model, null);
-    assert.equal(snap, null);
-  });
-
-  test("a reply reports its own init's model, not its predecessor's", async () => {
+  test("each turn reports the model its own init announced", async () => {
     const createRunner = fakeRunners((runner, index) =>
       runner.init("s-1", index === 0 ? "model-old" : "model-new"),
     );
     const engine = createEngine({ createRunner, timeoutMs: 60_000 });
 
-    await engine.submitStart({ prompt: "hi", cwd: "/repo" });
+    const turn = await engine.submitStart({ prompt: "hi", cwd: "/repo" });
     createRunner.created[0].result({ text: "ok" });
-    await settled(engine, "s-1");
+    const result = await engine.awaitTurn(turn);
+    assert.equal(result.model, "model-old");
+    assert.equal((await settled(engine, "s-1")).model, "model-old");
 
     await engine.submitReply({ sessionId: "s-1", prompt: "again" });
     createRunner.created[1].result({ text: "resumed" });
-    const snap = await settled(engine, "s-1");
-    assert.equal(snap.model, "model-new");
+    assert.equal((await settled(engine, "s-1")).model, "model-new");
   });
 
-  test("an init without a model leaves the field null, not inherited", async () => {
-    const createRunner = fakeRunners((runner, index) =>
-      runner.init("s-1", index === 0 ? "model-old" : undefined),
+  test("a mid-turn fallback overrides the model init resolved", async () => {
+    const createRunner = fakeRunners((runner) =>
+      runner.init("s-1", "model-configured"),
     );
     const engine = createEngine({ createRunner, timeoutMs: 60_000 });
 
     await engine.submitStart({ prompt: "hi", cwd: "/repo" });
+    createRunner.created[0].model("model-fallback");
     createRunner.created[0].result({ text: "ok" });
-    await settled(engine, "s-1");
+    assert.equal((await settled(engine, "s-1")).model, "model-fallback");
+  });
 
-    await engine.submitReply({ sessionId: "s-1", prompt: "again" });
-    createRunner.created[1].result({ text: "resumed" });
+  test("a turn that failed after init still reports its model", async () => {
+    const createRunner = fakeRunners((runner) =>
+      runner.init("s-1", "claude-test-model"),
+    );
+    const engine = createEngine({ createRunner, timeoutMs: 60_000 });
+
+    await engine.submitStart({ prompt: "hi", cwd: "/repo" });
+    createRunner.created[0].result({
+      isError: true,
+      subtype: "error_during_execution",
+      errors: ["boom"],
+    });
     const snap = await settled(engine, "s-1");
-    assert.equal(snap.model, null);
+    assert.equal(snap.status, "failed");
+    assert.equal(snap.model, "claude-test-model");
   });
 });
