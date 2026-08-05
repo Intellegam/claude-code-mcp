@@ -12,13 +12,14 @@ describe("sync tool calls", () => {
   const server = spawnServer();
   after(() => server.close());
 
-  test("claude returns output and a session id trailer", async (t) => {
+  test("claude returns output, a session id and a model trailer", async (t) => {
     await server.init();
     const response = await server.call("claude", { prompt: "hello" });
     assert.equal(response.error, undefined);
     const texts = response.result.content.map((c) => c.text);
     assert.match(texts[0], /Mock response to: hello/);
     assert.match(texts[1], /\[SESSION_ID: mock-/);
+    assert.match(texts[1], /\[MODEL: mock-model-1\]/);
   });
 
   test("the prompt stream is held open until the turn settles", async () => {

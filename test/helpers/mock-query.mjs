@@ -173,6 +173,7 @@ export function query({ prompt, options = {} }) {
       type: "system",
       subtype: "init",
       session_id: sessionId,
+      model: "mock-model-1",
       cwd: options.cwd,
       tools: ["Read", "Grep", "Glob"],
       mcp_servers: [],

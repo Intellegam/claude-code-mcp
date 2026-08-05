@@ -33,7 +33,7 @@ install.
 ```toml
 [mcp_servers.claude-agent]
 command = "npx"
-args = ["-y", "github:Intellegam/claude-code-mcp#v0.1.1"]
+args = ["-y", "github:Intellegam/claude-code-mcp#v0.1.2"]
 ```
 
 Or from a local checkout:
@@ -72,6 +72,10 @@ Parameters: `prompt` (required), `cwd`, `writable` (default false), `async`
 Pass `cwd` — it is the repo Claude reads, and the CLI loads that repo's own
 configuration and `CLAUDE.md` from there.
 
+A successful synchronous call returns the answer followed by a trailer block:
+`[SESSION_ID: …]` and `[MODEL: …]` — the model the CLI resolved for the turn,
+as reported at turn initialization. Failures carry only the error text.
+
 ### `claude-reply` — continue a session
 
 ```
@@ -97,8 +101,8 @@ claude-result({ sessionId: "e0dbaa09-…" })              // immediate check
 claude-result({ sessionId: "e0dbaa09-…", wait: true })  // block until done
 ```
 
-Returns the latest turn's snapshot: `status`, `done`, `output`, `error`,
-`elapsed`, …
+Returns the latest turn's snapshot: `status`, `done`, `output`, `model`,
+`error`, `elapsed`, … (`model` is `null` until the turn has initialized).
 
 ### `claude-cancel` — cancel the active turn
 
@@ -147,6 +151,14 @@ one turn may be active at a time.
 memory files, hooks, skills, plugins and MCP servers. The trade is a wider tool
 surface than a sealed sandbox, and the startup cost of your MCP servers on every
 turn — in exchange the consultation has the context and tooling you do.
+
+That includes the **model**: a consultation runs whatever your Claude Code
+resolves as its default — the `model` setting in `~/.claude/settings.json` (or a
+project settings file), falling back to the CLI default. A model picked in an
+interactive session's model selector is session state, not configuration, and
+does not apply here; set `model` in settings to change what consultations use.
+Every response reports the model that actually served the turn (the `[MODEL: …]`
+trailer on sync calls, the `model` field on snapshots).
 
 Read-only is the default: no `Write`, `Edit`, `NotebookEdit`, `Bash`, `Monitor`,
 `REPL` or `TaskCreate`/`TaskUpdate`/`TaskStop`, and inline `!` shell commands in

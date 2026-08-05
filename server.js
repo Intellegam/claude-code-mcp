@@ -20,7 +20,7 @@ import {
 } from "./lib/engine.js";
 import { createRunnerFactory, loadQuery } from "./lib/claude-runner.js";
 
-const VERSION = "0.1.1";
+const VERSION = "0.1.2";
 const TIMEOUT_MS =
   parseInt(process.env.CLAUDE_TIMEOUT_MS, 10) || DEFAULT_TIMEOUT_MS;
 const CANCEL_WATCHDOG_MS =
@@ -377,9 +377,10 @@ async function handleToolCall(id, params) {
     const result = await engine.awaitTurn(turn);
     const content = [{ type: "text", text: result.output }];
     if (result.sessionId) {
+      const model = result.model ? `\n[MODEL: ${result.model}]` : "";
       content.push({
         type: "text",
-        text: `\n[SESSION_ID: ${result.sessionId}]`,
+        text: `\n[SESSION_ID: ${result.sessionId}]${model}`,
       });
     }
     sendResponse(id, { content }, call);

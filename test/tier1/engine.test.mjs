@@ -39,7 +39,7 @@ function fakeRunners(script) {
       getStderr: () => runner.stderr,
 
       // --- event drivers ---
-      init: (sessionId) => runner.events.onInit(sessionId),
+      init: (sessionId, model) => runner.events.onInit(sessionId, model),
       text: (text) => runner.events.onText(text),
       result: (patch = {}) =>
         runner.events.onResult({
@@ -417,5 +417,68 @@ describe("sessions", () => {
     assert.equal(snap.status, "failed");
     assert.equal(snap.error.source, "shutdown");
     await pending;
+  });
+});
+
+describe("model reporting", () => {
+  test("the init model reaches snapshots and the sync result", async () => {
+    const createRunner = fakeRunners((runner) =>
+      runner.init("s-1", "claude-test-model"),
+    );
+    const engine = createEngine({ createRunner, timeoutMs: 60_000 });
+
+    const turn = await engine.submitStart({ prompt: "hi", cwd: "/repo" });
+    createRunner.created[0].result({ text: "ok" });
+
+    const result = await engine.awaitTurn(turn);
+    assert.equal(result.model, "claude-test-model");
+    const snap = await settled(engine, "s-1");
+    assert.equal(snap.model, "claude-test-model");
+  });
+
+  test("a turn that never initialized reports model: null", async () => {
+    const createRunner = fakeRunners((runner) => runner.done());
+    const engine = createEngine({ createRunner, timeoutMs: 60_000 });
+
+    const turn = await engine.submitStart({ prompt: "hi", cwd: "/repo" });
+    const snap = await settled(engine, turn.sessionId ?? undefined).catch(
+      () => null,
+    );
+    // Pre-init failures have no session to snapshot through; the turn record
+    // itself is the observable.
+    assert.equal(turn.model, null);
+    assert.equal(snap, null);
+  });
+
+  test("a reply reports its own init's model, not its predecessor's", async () => {
+    const createRunner = fakeRunners((runner, index) =>
+      runner.init("s-1", index === 0 ? "model-old" : "model-new"),
+    );
+    const engine = createEngine({ createRunner, timeoutMs: 60_000 });
+
+    await engine.submitStart({ prompt: "hi", cwd: "/repo" });
+    createRunner.created[0].result({ text: "ok" });
+    await settled(engine, "s-1");
+
+    await engine.submitReply({ sessionId: "s-1", prompt: "again" });
+    createRunner.created[1].result({ text: "resumed" });
+    const snap = await settled(engine, "s-1");
+    assert.equal(snap.model, "model-new");
+  });
+
+  test("an init without a model leaves the field null, not inherited", async () => {
+    const createRunner = fakeRunners((runner, index) =>
+      runner.init("s-1", index === 0 ? "model-old" : undefined),
+    );
+    const engine = createEngine({ createRunner, timeoutMs: 60_000 });
+
+    await engine.submitStart({ prompt: "hi", cwd: "/repo" });
+    createRunner.created[0].result({ text: "ok" });
+    await settled(engine, "s-1");
+
+    await engine.submitReply({ sessionId: "s-1", prompt: "again" });
+    createRunner.created[1].result({ text: "resumed" });
+    const snap = await settled(engine, "s-1");
+    assert.equal(snap.model, null);
   });
 });

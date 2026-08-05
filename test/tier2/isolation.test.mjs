@@ -62,6 +62,13 @@ describe("the operator's own configuration is what loads", () => {
     );
     assert.equal(response.error, undefined, JSON.stringify(response.error));
     assert.match(response.result.content[0].text, /isolation check done/);
+    // The model the CLI resolved for the turn is reported next to the session
+    // id — whatever it resolves to in the sandbox, it must be present.
+    assert.match(
+      response.result.content[1].text,
+      /\[MODEL: [^\]\s]+\]/,
+      "the sync trailer reports the model from system/init",
+    );
   });
 
   test("both the user and the project hook ran", () => {
