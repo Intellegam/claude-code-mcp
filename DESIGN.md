@@ -14,7 +14,8 @@ Everything marked *verified* was established empirically against
 
 The turn/session engine is ported from codex-mcp: turn records, session records,
 the one-active-turn guard, the cancel watchdog, terminal states and snapshot
-shapes are all the same. What is dropped is codex-mcp's app-server connection
+shapes are all the same, apart from the `model` field and `[MODEL: …]` trailer
+this server adds. What is dropped is codex-mcp's app-server connection
 layer: there is no persistent Claude daemon. Each turn spawns its own CLI child
 through the SDK, and continuity comes from `resume`.
 
@@ -32,6 +33,11 @@ only once the turn has settled.
 - **`system/init`** marks initialization and carries the session id. It is
   emitted once per *turn*, not per session. The id it reports is authoritative:
   the engine adopts it even when it differs from the id being resumed.
+  *Verified* (tier 2): it also carries the model the CLI resolved, and assistant
+  messages carry the model that served them. The runner reports both through a
+  single `onModel` event, last-write-wins — so a mid-turn fallback, if the CLI
+  performs one, reports truthfully — stored per turn for snapshots and the sync
+  `[MODEL: …]` trailer.
 - **Interrupt gating.** *Verified:* before init, `interrupt()` resolves but does
   nothing (a window of roughly 350ms for a fresh session, longer whenever the
   CLI start is slow). A cancel arriving in that window is buffered as
@@ -99,8 +105,9 @@ serve it:
 - **Nested-session env markers and the transport/credential unit.**
   `CLAUDECODE` and `CLAUDE_CODE_*` change CLI behaviour when a Claude Code
   session spawns another; the child environment is the parent's minus those.
-  `CLAUDE_CODE_OAUTH_TOKEN` is the one exception kept, as a supported headless
-  credential. Dropped with them, and *as one unit*: `ANTHROPIC_BASE_URL` and
+  The exceptions kept: `CLAUDE_CODE_OAUTH_TOKEN` (a supported headless
+  credential) and the `CLAUDE_CODE_USE_BEDROCK`/`CLAUDE_CODE_USE_VERTEX`
+  backend switches, which keep the consultation on the operator's own backend. Dropped with them, and *as one unit*: `ANTHROPIC_BASE_URL` and
   `ANTHROPIC_UNIX_SOCKET`, which point the consultation at another backend, and
   `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_CUSTOM_HEADERS`, which are that
   backend's credential — a credential must not outlive its destination, or it
