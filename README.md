@@ -33,7 +33,7 @@ install.
 ```toml
 [mcp_servers.claude-agent]
 command = "npx"
-args = ["-y", "github:Intellegam/claude-code-mcp#v0.1.2"]
+args = ["-y", "github:Intellegam/claude-code-mcp#v0.1.3"]
 ```
 
 Or from a local checkout:
@@ -170,10 +170,10 @@ publishing and interactive tools (`Task`/`Agent`, `Workflow`, `Cron*`,
 prompts — scope it explicitly in the prompt.
 
 Read-only restricts *mutation through Claude Code's built-in tools*, not
-visibility, and not your MCP servers: `Read`, `Glob` and `Grep` work outside
-`cwd` (out-of-tree permission requests are auto-approved), and the MCP tools
-your configuration provides stay available in both modes and may have side
-effects of their own. Be aware what that delegates: anything your Claude Code
+visibility, and not your non-bridge MCP servers: `Read`, `Glob` and `Grep` work
+outside `cwd` (out-of-tree permission requests are auto-approved), and the
+non-bridge MCP tools your configuration provides stay available in both modes
+and may have side effects of their own. Be aware what that delegates: anything your Claude Code
 can read, the consultation can read — and what it reads may flow back into the
 *calling agent's* transcript. That second hop is part of the trust boundary.
 
@@ -188,10 +188,12 @@ indistinguishably from unruled ones), a `Grep` sweep still discloses an
 ask-ruled file's contents, and writable mode bypasses ask rules entirely. Use
 `deny` for anything that must hold.
 
-The one thing always denied is an **agent-bridge MCP server**
-(`mcp__codex__*`, `mcp__codex-agent__*`, `mcp__claude-code-mcp__*`, …) — because
-a consulted Claude calling Codex back would close a Codex → Claude → Codex loop.
-The exact matching rule is in DESIGN.md → Trust model.
+The one thing always denied is an **agent-bridge MCP server**. The shipped
+manual and plugin-normalized bridge identities are removed from the model's
+tool schema with `disallowedTools`; a `PreToolUse` deny hook catches aliases
+such as `mcp__codex__*` or versioned bridge names. A consulted Claude calling
+Codex back would otherwise close a Codex → Claude → Codex loop. The exact
+matching rule is in DESIGN.md → Trust model.
 
 The child's environment is your environment minus `CLAUDECODE` and
 `CLAUDE_CODE_*` (nested-session markers that change CLI behaviour;

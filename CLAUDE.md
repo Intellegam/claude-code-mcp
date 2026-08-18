@@ -50,8 +50,9 @@ Test seams (read from the *server's* env, never from tool arguments):
 - **Resume is keyed by session id *and* cwd.** A different cwd is a hard failure,
   not a new session. The engine adopts whatever id `system/init` reports, even
   when it differs from the one being resumed.
-- **Authorization is two gates, and they are not interchangeable.** The
-  `PreToolUse` hook in `lib/isolation.js` only *denies* (agent-bridge servers,
+- **Authorization is two gates, and they are not interchangeable.** Exact
+  `disallowedTools` specs hide the shipped bridge servers; the `PreToolUse`
+  hook in `lib/isolation.js` only *denies* aliases (agent-bridge servers,
   both modes) — a hook decision is terminal, so allowing there would override
   the operator's own `permissions.deny` rules. Approving is `canUseTool`'s job,
   read-only only, because it runs after rule evaluation. Never move an allow
@@ -59,7 +60,7 @@ Test seams (read from the *server's* env, never from tool arguments):
 - **A consultation runs as the operator's own Claude Code.** `settingSources` is
   unset on purpose: user + project + local config all load, and their permission
   rules stay authoritative. The only always-deny is an agent-bridge MCP server
-  (recursion guard).
+  (native deny-list plus alias fallback hook).
 - **The tool surface is wider than it looks.** `Monitor` and `REPL` execute
   code, `Skill` runs inline `!` commands unless `disableSkillShellExecution` is
   set, delegation is called `Agent` to the model but `Task` in `system/init`,
@@ -106,8 +107,11 @@ Test seams (read from the *server's* env, never from tool arguments):
    `npm install --package-lock-only`), `VERSION` in `server.js`, and the
    `#v{version}` tag pin in `README.md`'s install snippet. The protocol test
    asserts server.js against package.json, so drift fails the suite.
-2. `git tag v{version}`.
-3. Update the `~/.codex/config.toml` entry if it pins a tag — the documented
+2. Merge the server release PR.
+3. Tag the resulting `main` commit, push the tag, and verify it is available on
+   the remote: `git tag v{version}` then `git push origin v{version}`.
+4. Update the `~/.codex/config.toml` entry if it pins a tag — the documented
    snippet does not.
-4. In agent-plugins: bump the `claude-code` plugin's `.mcp.json` tag pin and
-   `.codex-plugin/plugin.json` version, or consumers keep the old build.
+5. In agent-plugins: bump the `claude-code` plugin's `.mcp.json` tag pin and
+   `.codex-plugin/plugin.json` version, then merge that dependent change only
+   after the server tag is available, or consumers receive an unresolved pin.

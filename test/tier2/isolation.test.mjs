@@ -11,9 +11,13 @@ import test, { after, before, describe } from "node:test";
 import assert from "node:assert/strict";
 import { systemText, toolResults } from "../helpers/mock-api.mjs";
 import {
+  ALIAS_BRIDGE_MCP_TOOL,
   BRIDGE_MCP_TOOL,
+  CLAUDE_BRIDGE_MCP_TOOL,
   DENIED_MCP_TOOL,
   MCP_TOOL_OUTPUT,
+  PLUGIN_BRIDGE_MCP_TOOL,
+  PLUGIN_CLAUDE_BRIDGE_MCP_TOOL,
   PROJECT_MARKER,
   REPO_MCP_TOOL,
   USER_MARKER,
@@ -84,9 +88,14 @@ describe("the operator's own configuration is what loads", () => {
     const { tools } = ctx.mock.mainCalls()[0];
     assert.ok(tools.includes(USER_MCP_TOOL), JSON.stringify(tools));
     assert.ok(tools.includes(REPO_MCP_TOOL), JSON.stringify(tools));
+    assert.ok(!tools.includes(BRIDGE_MCP_TOOL), "manual bridge tool is hidden");
     assert.ok(
-      tools.includes(BRIDGE_MCP_TOOL),
-      "a bridge server still loads; it is denied at call time, not hidden",
+      !tools.includes(PLUGIN_BRIDGE_MCP_TOOL),
+      "plugin-normalized bridge tool is hidden",
+    );
+    assert.ok(
+      tools.includes(ALIAS_BRIDGE_MCP_TOOL),
+      "an alias outside the exact deny-list reaches the fallback hook",
     );
   });
 
@@ -118,10 +127,21 @@ describe("MCP tool availability", () => {
         { text: "the repo tool ran" },
         { tool: DENIED_MCP_TOOL, input: {} },
         { text: "the operator's rule refused it" },
-        { tool: BRIDGE_MCP_TOOL, input: {} },
-        { text: "the bridge was refused" },
-        { tool: BRIDGE_MCP_TOOL, input: {} },
-        { text: "the bridge was refused again" },
+        ...[
+          BRIDGE_MCP_TOOL,
+          PLUGIN_BRIDGE_MCP_TOOL,
+          CLAUDE_BRIDGE_MCP_TOOL,
+          PLUGIN_CLAUDE_BRIDGE_MCP_TOOL,
+        ].flatMap((tool) => [
+          { tool, input: {} },
+          { text: "the bridge was refused" },
+          { tool, input: {} },
+          { text: "the bridge was refused again" },
+        ]),
+        { tool: ALIAS_BRIDGE_MCP_TOOL, input: {} },
+        { text: "the alias was refused" },
+        { tool: ALIAS_BRIDGE_MCP_TOOL, input: {} },
+        { text: "the alias was refused again" },
       ],
     });
   });
@@ -165,18 +185,42 @@ describe("MCP tool availability", () => {
     );
   });
 
+  for (const bridgeTool of [
+    BRIDGE_MCP_TOOL,
+    PLUGIN_BRIDGE_MCP_TOOL,
+    CLAUDE_BRIDGE_MCP_TOOL,
+    PLUGIN_CLAUDE_BRIDGE_MCP_TOOL,
+  ]) {
+    for (const writable of [false, true]) {
+      test(`${bridgeTool} is hidden (writable=${writable})`, async () => {
+        const before = ctx.mock.mainCalls().length;
+        const response = await ctx.server.call(
+          "claude",
+          { prompt: "Call the agent bridge.", cwd: ctx.sandbox.repo, writable },
+          120000,
+        );
+        assert.equal(response.error, undefined, JSON.stringify(response.error));
+        const results = toolResults(ctx.mock.mainCalls()[before + 1]);
+        assert.equal(results[0].isError, true, JSON.stringify(results));
+        assert.match(results[0].text, /No such tool available/i);
+        assert.ok(!results[0].text.includes(MCP_TOOL_OUTPUT), "bridge never ran");
+      });
+    }
+  }
+
   for (const writable of [false, true]) {
-    test(`an agent-bridge MCP tool is denied (writable=${writable})`, async () => {
+    test(`the fallback hook denies an alias (writable=${writable})`, async () => {
       const before = ctx.mock.mainCalls().length;
       const response = await ctx.server.call(
         "claude",
-        { prompt: "Call codex.", cwd: ctx.sandbox.repo, writable },
+        { prompt: "Call the Codex alias.", cwd: ctx.sandbox.repo, writable },
         120000,
       );
       assert.equal(response.error, undefined, JSON.stringify(response.error));
       const results = toolResults(ctx.mock.mainCalls()[before + 1]);
       assert.equal(results[0].isError, true, JSON.stringify(results));
       assert.match(results[0].text, /Agent-bridge MCP servers are not available/);
+      assert.ok(!results[0].text.includes(MCP_TOOL_OUTPUT), "bridge never ran");
     });
   }
 });

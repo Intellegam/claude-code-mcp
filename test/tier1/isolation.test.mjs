@@ -187,6 +187,21 @@ describe("query options", () => {
     }
   });
 
+  test("the shipped bridge MCP servers are removed in both modes", () => {
+    const bridgeSpecs = [
+      "mcp__codex-agent__*",
+      "mcp__plugin_codex_codex-agent__*",
+      "mcp__claude-agent__*",
+      "mcp__plugin_claude-code_claude-agent__*",
+    ];
+    for (const writable of [false, true]) {
+      const { disallowedTools } = buildQueryOptions({ ...base, writable });
+      for (const spec of bridgeSpecs) {
+        assert.ok(disallowedTools.includes(spec), `${spec} (writable=${writable})`);
+      }
+    }
+  });
+
   test("the claude_code preset is requested explicitly", () => {
     const options = buildQueryOptions(base);
     assert.equal(options.systemPrompt.type, "preset");
@@ -211,15 +226,20 @@ const BRIDGE_TOOLS = [
   "mcp__codex-agent-v2__codex",
 ];
 
-const NON_BRIDGE_TOOLS = [
+const HOOK_PASSTHROUGH_TOOLS = [
   "mcp__logfire__query_run",
+  // Plugin-normalized bridge identities are owned by the exact
+  // disallowedTools specs; the hook must not guess their underscore boundary.
+  "mcp__plugin_codex_codex-agent__codex",
+  "mcp__plugin_claude-code_claude-agent__claude",
   // Near-misses: the bridge names are a whole server segment, not a prefix, so
   // an unrelated server that starts with one is not denied.
   "mcp__codexdb__query",
   "mcp__claude-agent-inbox__list",
+  "mcp__plugin_foo_claude-agent-inbox__list",
 ];
 
-describe("the agent-bridge PreToolUse gate", () => {
+describe("the fallback agent-bridge PreToolUse gate", () => {
   const decide = async (options, toolName) => {
     const [matcher] = options.hooks.PreToolUse;
     const [hook] = matcher.hooks;
@@ -252,7 +272,7 @@ describe("the agent-bridge PreToolUse gate", () => {
       // permissions.deny rules. Everything but a bridge tool falls through to
       // the CLI's rule evaluation.
       const options = buildQueryOptions({ cwd: "/repo", writable });
-      for (const tool of [...NON_BRIDGE_TOOLS, "Read", "Bash"]) {
+      for (const tool of [...HOOK_PASSTHROUGH_TOOLS, "Read", "Bash"]) {
         const decision = await decide(options, tool);
         assert.equal(decision.hookSpecificOutput, undefined, tool);
         assert.equal(decision.continue, true, tool);
@@ -265,7 +285,7 @@ describe("the read-only permission callback", () => {
   const callback = () => buildQueryOptions({ cwd: "/repo" }).canUseTool;
 
   test("MCP tools from the operator's configuration are approved", async () => {
-    for (const tool of NON_BRIDGE_TOOLS) {
+    for (const tool of HOOK_PASSTHROUGH_TOOLS) {
       const decision = await callback()(tool, { a: 1 }, {});
       assert.equal(decision.behavior, "allow", tool);
       assert.deepEqual(decision.updatedInput, { a: 1 });
