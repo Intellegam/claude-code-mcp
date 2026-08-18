@@ -35,6 +35,11 @@ export const USER_MCP_TOOL = "mcp__usertool__user_ping";
 export const REPO_MCP_TOOL = "mcp__repotool__repo_ping";
 /** An agent-bridge server: denied in both modes, however it was declared. */
 export const BRIDGE_MCP_TOOL = "mcp__codex-agent__codex";
+/** The same bridge as Claude Code names it when loaded from the codex plugin. */
+export const PLUGIN_BRIDGE_MCP_TOOL =
+  "mcp__plugin_codex_codex-agent__codex";
+/** A bridge alias outside the exact deny-list, caught by the fallback hook. */
+export const ALIAS_BRIDGE_MCP_TOOL = "mcp__codex-agent-v2__codex";
 /** A benign server the *operator's* project settings deny: their rule must win. */
 export const DENIED_MCP_TOOL = "mcp__denytool__deny_ping";
 export const MCP_TOOL_OUTPUT = "MCP-FIXTURE-TOOL-RAN";
@@ -160,6 +165,8 @@ export function createSandbox({ mcpServers = false, askRules = [] } = {}) {
         ["repotool", "repo_ping"],
         ["denytool", "deny_ping"],
         ["codex-agent", "codex"],
+        ["plugin_codex_codex-agent", "codex"],
+        ["codex-agent-v2", "codex"],
       ]),
     });
   }

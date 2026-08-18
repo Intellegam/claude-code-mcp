@@ -20,7 +20,7 @@ import {
 } from "./lib/engine.js";
 import { createRunnerFactory, loadQuery } from "./lib/claude-runner.js";
 
-const VERSION = "0.1.2";
+const VERSION = "0.1.3";
 const TIMEOUT_MS =
   parseInt(process.env.CLAUDE_TIMEOUT_MS, 10) || DEFAULT_TIMEOUT_MS;
 const CANCEL_WATCHDOG_MS =
@@ -44,7 +44,7 @@ const engine = createEngine({
 const INSTRUCTIONS = [
   "Claude Code is an external AI agent for second opinions, plan validation, and code review.",
   "Form your own analysis first, then consult it — and treat disagreement as signal, not noise.",
-  "`claude` defaults to read-only — no writes, no shell, no subagents through Claude Code's built-in tools; it runs as the operator's own Claude Code, so their MCP servers stay available and those may have side effects.",
+  "`claude` defaults to read-only — no writes, no shell, no subagents through Claude Code's built-in tools; it runs as the operator's own Claude Code, so non-bridge MCP servers stay available and those may have side effects.",
   "`writable: true` allows file writes and commands and must be explicitly scoped in the prompt.",
   "`async: true` on `claude` and `claude-reply` returns a sessionId immediately instead of blocking; poll with `claude-result` (use `wait: true` to block until done) and stop with `claude-cancel`.",
   "Session IDs work across `claude-reply`, `claude-result`, and `claude-cancel`.",

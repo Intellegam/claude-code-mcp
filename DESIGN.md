@@ -117,12 +117,16 @@ serve it:
   configures its destination in a settings file, and settings load in full.
 - **Agent-bridge MCP servers.** The operator's plugins almost certainly include
   one — codex-mcp is what calls *this* server — and a consulted Claude that can
-  call Codex back closes a recursion loop. Tool names matching
-  `/^mcp__(codex|claude)(?:[-_](?:code|agent|mcp))*(?:[-_]v?\d+)*__/i` are
-  denied in both permission modes; every other MCP tool is allowed. The
-  trailing `__` matters: the whole server segment has to be a bridge name, so
-  `mcp__claude_code_2__*` is caught while `mcp__codexdb__*` and
-  `mcp__claude-agent-inbox__*` are not.
+  call Codex back closes a recursion loop. Exact `disallowedTools` server specs
+  remove the shipped manual and plugin-normalized bridge identities from the
+  model's schema. A `PreToolUse` hook catches manually configured aliases
+  matching
+  `/^mcp__(codex|claude)(?:[-_](?:code|agent|mcp))*(?:[-_]v?\d+)*__/i` in both
+  permission modes. It intentionally does not parse Claude Code's ambiguous
+  underscore-normalized plugin names; the exact specs own those. Every other
+  MCP tool is left to the operator's normal permission rules. The trailing
+  `__` matters: the whole manual server segment has to be a bridge name, so
+  `mcp__claude_code_2__*` is caught while `mcp__codexdb__*` is not.
 
 ### Permission levels
 
@@ -163,8 +167,9 @@ are the tool surface as it actually exists at 0.3.220, and the tier-2 drift
 guard pins that surface so the next SDK bump has to be looked at.
 
 *Verified:* `disallowedTools` removes tools from the schema entirely rather than
-denying at call time; it propagates to subagents and beats on-disk allow rules,
-including a project `permissions.allow`. `allowedTools` is deliberately left
+denying at call time; its MCP server-level specs remove every tool from a named
+server in both permission modes, it propagates to subagents, and it beats
+on-disk allow rules, including a project `permissions.allow`. `allowedTools` is deliberately left
 unset so the read tools stay available without maintaining an allowlist against
 every SDK release. `bypassPermissions` requires
 `allowDangerouslySkipPermissions` alongside it, and the read-only recipe never
@@ -173,7 +178,8 @@ available".
 
 ### Two gates, and why neither is the other
 
-The `PreToolUse` hook **denies** agent-bridge tools, in both modes. *Verified:*
+Exact `disallowedTools` specs remove the shipped agent-bridge servers first.
+The `PreToolUse` hook **denies** aliases, in both modes. *Verified:*
 `canUseTool` is never invoked under `bypassPermissions` — the SDK auto-approves
 first and warns that the callback is shadowed — and that is the writable mode
 this wrapper uses, so a `canUseTool` deny would have been silently inert exactly
