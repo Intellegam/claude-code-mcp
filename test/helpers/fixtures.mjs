@@ -38,6 +38,10 @@ export const BRIDGE_MCP_TOOL = "mcp__codex-agent__codex";
 /** The same bridge as Claude Code names it when loaded from the codex plugin. */
 export const PLUGIN_BRIDGE_MCP_TOOL =
   "mcp__plugin_codex_codex-agent__codex";
+/** The shipped Claude bridge identities are denied for the same recursion risk. */
+export const CLAUDE_BRIDGE_MCP_TOOL = "mcp__claude-agent__claude";
+export const PLUGIN_CLAUDE_BRIDGE_MCP_TOOL =
+  "mcp__plugin_claude-code_claude-agent__claude";
 /** A bridge alias outside the exact deny-list, caught by the fallback hook. */
 export const ALIAS_BRIDGE_MCP_TOOL = "mcp__codex-agent-v2__codex";
 /** A benign server the *operator's* project settings deny: their rule must win. */
@@ -166,6 +170,8 @@ export function createSandbox({ mcpServers = false, askRules = [] } = {}) {
         ["denytool", "deny_ping"],
         ["codex-agent", "codex"],
         ["plugin_codex_codex-agent", "codex"],
+        ["claude-agent", "claude"],
+        ["plugin_claude-code_claude-agent", "claude"],
         ["codex-agent-v2", "codex"],
       ]),
     });

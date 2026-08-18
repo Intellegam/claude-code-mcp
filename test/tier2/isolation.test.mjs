@@ -13,9 +13,11 @@ import { systemText, toolResults } from "../helpers/mock-api.mjs";
 import {
   ALIAS_BRIDGE_MCP_TOOL,
   BRIDGE_MCP_TOOL,
+  CLAUDE_BRIDGE_MCP_TOOL,
   DENIED_MCP_TOOL,
   MCP_TOOL_OUTPUT,
   PLUGIN_BRIDGE_MCP_TOOL,
+  PLUGIN_CLAUDE_BRIDGE_MCP_TOOL,
   PROJECT_MARKER,
   REPO_MCP_TOOL,
   USER_MARKER,
@@ -125,7 +127,12 @@ describe("MCP tool availability", () => {
         { text: "the repo tool ran" },
         { tool: DENIED_MCP_TOOL, input: {} },
         { text: "the operator's rule refused it" },
-        ...[BRIDGE_MCP_TOOL, PLUGIN_BRIDGE_MCP_TOOL].flatMap((tool) => [
+        ...[
+          BRIDGE_MCP_TOOL,
+          PLUGIN_BRIDGE_MCP_TOOL,
+          CLAUDE_BRIDGE_MCP_TOOL,
+          PLUGIN_CLAUDE_BRIDGE_MCP_TOOL,
+        ].flatMap((tool) => [
           { tool, input: {} },
           { text: "the bridge was refused" },
           { tool, input: {} },
@@ -178,13 +185,18 @@ describe("MCP tool availability", () => {
     );
   });
 
-  for (const bridgeTool of [BRIDGE_MCP_TOOL, PLUGIN_BRIDGE_MCP_TOOL]) {
+  for (const bridgeTool of [
+    BRIDGE_MCP_TOOL,
+    PLUGIN_BRIDGE_MCP_TOOL,
+    CLAUDE_BRIDGE_MCP_TOOL,
+    PLUGIN_CLAUDE_BRIDGE_MCP_TOOL,
+  ]) {
     for (const writable of [false, true]) {
       test(`${bridgeTool} is hidden (writable=${writable})`, async () => {
         const before = ctx.mock.mainCalls().length;
         const response = await ctx.server.call(
           "claude",
-          { prompt: "Call codex.", cwd: ctx.sandbox.repo, writable },
+          { prompt: "Call the agent bridge.", cwd: ctx.sandbox.repo, writable },
           120000,
         );
         assert.equal(response.error, undefined, JSON.stringify(response.error));
