@@ -10,6 +10,7 @@
 
 import test, { describe } from "node:test";
 import assert from "node:assert/strict";
+import { createRunnerFactory } from "../../lib/claude-runner.js";
 import { createEngine } from "../../lib/engine.js";
 
 /**
@@ -418,6 +419,33 @@ describe("sessions", () => {
     assert.equal(snap.error.source, "shutdown");
     await pending;
   });
+
+  test(
+    "shutdown does not wait for a stuck resume metadata lookup",
+    { timeout: 1000 },
+    async () => {
+      let queries = 0;
+      const createRunner = createRunnerFactory({
+        getSessionInfo: () => new Promise(() => {}),
+        query: () => {
+          queries += 1;
+          throw new Error("query must not start while metadata is pending");
+        },
+      });
+      const engine = createEngine({ createRunner, timeoutMs: 60_000 });
+      const turn = engine.beginReply({
+        sessionId: "unknown-session",
+        prompt: "continue",
+        cwd: "/repo",
+      });
+
+      await engine.shutdown();
+
+      assert.equal(turn.status, "failed");
+      assert.equal(turn.error.source, "shutdown");
+      assert.equal(queries, 0);
+    },
+  );
 });
 
 describe("model reporting", () => {
