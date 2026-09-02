@@ -33,7 +33,7 @@ install.
 ```toml
 [mcp_servers.claude-agent]
 command = "npx"
-args = ["-y", "github:Intellegam/claude-code-mcp#v0.1.3"]
+args = ["-y", "github:Intellegam/claude-code-mcp#v0.1.4"]
 ```
 
 Or from a local checkout:
