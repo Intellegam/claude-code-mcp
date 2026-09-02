@@ -143,7 +143,7 @@ describe("query options", () => {
         `${tool} must be disallowed`,
       );
     }
-    for (const tool of ["TaskGet", "TaskList", "TaskOutput"]) {
+    for (const tool of ["ListAgents", "TaskGet", "TaskList", "TaskOutput"]) {
       assert.ok(!options.disallowedTools.includes(tool), `${tool} stays`);
     }
     assert.equal(options.permissionMode, undefined);
@@ -153,7 +153,7 @@ describe("query options", () => {
   test("read-only mode disables inline shell execution in skills", () => {
     // The Skill tool stays available and a skill body can carry inline `!`
     // commands, which no disallowedTools entry covers. Passed as a JSON string:
-    // 0.3.220 stringifies the option with String(), so an object arrives as
+    // 0.3.258 stringifies the option with String(), so an object arrives as
     // "[object Object]" and the CLI refuses to start.
     const options = buildQueryOptions(base);
     assert.equal(typeof options.settings, "string");

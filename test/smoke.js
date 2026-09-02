@@ -152,7 +152,11 @@ await scenario("a follow-up remembers the conversation", async () => {
     cwd: REPO_ROOT,
   });
   assert(!response.error, response.error?.message);
-  assert(/claude-runner/.test(text(response)), "session context was lost");
+  const output = text(response);
+  assert(
+    /claude-runner/.test(output),
+    `session context was lost: ${JSON.stringify(output)}`,
+  );
 });
 
 await scenario("read-only mode refuses to write", async () => {

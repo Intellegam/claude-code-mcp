@@ -70,16 +70,18 @@ describe("cancelling before the turn is up", () => {
 
   after(async () => ctx?.stop());
 
-  test("a cancel racing the CLI startup is still delivered", async () => {
+  test("a post-restart cancel racing the CLI startup is still delivered", async () => {
     const seed = await ctx.server.call(
       "claude",
       { prompt: "Say seeded.", cwd: ctx.sandbox.repo },
       120000,
     );
     const sessionId = sessionIdFrom(seed);
+    await ctx.restart();
 
-    // The reply's session id is known before the CLI has even started, so this
-    // cancel lands in the pre-init window where interrupt() is a no-op.
+    // The reply's session id is known before persisted-cwd validation and the
+    // CLI have started, so this cancel lands in the pre-init window where the
+    // runner must buffer it and the validation proxy must preserve interrupt().
     // Deliberately not awaited: `call()` has already written the request.
     const pending = ctx.server.call(
       "claude-reply",

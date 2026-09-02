@@ -18,7 +18,7 @@ import {
   DEFAULT_CANCEL_WATCHDOG_MS,
   DEFAULT_TIMEOUT_MS,
 } from "./lib/engine.js";
-import { createRunnerFactory, loadQuery } from "./lib/claude-runner.js";
+import { createRunnerFactory, loadSdk } from "./lib/claude-runner.js";
 
 const VERSION = "0.1.3";
 const TIMEOUT_MS =
@@ -35,8 +35,12 @@ const SHUTDOWN_GRACE_MS = 2_000;
  */
 const MAX_LINE_CHARS = 10 * 1024 * 1024;
 
+const sdk = await loadSdk();
 const engine = createEngine({
-  createRunner: createRunnerFactory({ query: await loadQuery() }),
+  createRunner: createRunnerFactory({
+    query: sdk.query,
+    getSessionInfo: sdk.getSessionInfo,
+  }),
   timeoutMs: TIMEOUT_MS,
   cancelWatchdogMs: CANCEL_WATCHDOG_MS,
 });
