@@ -20,7 +20,7 @@ import {
 } from "./lib/engine.js";
 import { createRunnerFactory, loadSdk } from "./lib/claude-runner.js";
 
-const VERSION = "0.1.3";
+const VERSION = "0.1.4";
 const TIMEOUT_MS =
   parseInt(process.env.CLAUDE_TIMEOUT_MS, 10) || DEFAULT_TIMEOUT_MS;
 const CANCEL_WATCHDOG_MS =
