@@ -327,29 +327,26 @@ describe("sessions", () => {
     );
   });
 
-  test("a failed resume does not overwrite the session's recorded cwd", async () => {
-    const createRunner = fakeRunners((runner, index) => {
-      if (index === 0) runner.init("s-1");
-      else if (index === 1) runner.done(); // resume failed: no init at all
-      else runner.init("s-1");
-    });
+  test("a known session refuses the wrong cwd and keeps its recorded cwd", async () => {
+    const createRunner = fakeRunners((runner) => runner.init("s-1"));
     const engine = createEngine({ createRunner, timeoutMs: 60_000 });
 
     await engine.submitStart({ prompt: "hi", cwd: "/repo/right" });
     createRunner.created[0].result({ text: "ok" });
     await settled(engine, "s-1");
 
-    await engine.submitReply({
+    const rejected = await engine.submitReply({
       sessionId: "s-1",
       prompt: "again",
       cwd: "/repo/wrong",
     });
-    const failed = await settled(engine, "s-1");
-    assert.equal(failed.status, "failed");
+    assert.equal(rejected.status, "failed");
+    assert.match(rejected.error.message, /same cwd/);
+    assert.equal(createRunner.created.length, 1, "no CLI child was spawned");
 
     // A later reply with no cwd must still resume from the cwd that worked.
     await engine.submitReply({ sessionId: "s-1", prompt: "once more" });
-    assert.equal(createRunner.created[2].options.cwd, "/repo/right");
+    assert.equal(createRunner.created[1].options.cwd, "/repo/right");
   });
 
   test("init adopting a different session id re-keys the session", async () => {

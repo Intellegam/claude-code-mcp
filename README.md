@@ -87,8 +87,9 @@ Parameters: `sessionId` (required), `prompt` (required), `cwd`, `async` (default
 false).
 
 Resume is keyed by session id **and** cwd, so pass the same `cwd` the session was
-created with — always, if the server may have restarted. A mismatch fails with a
-message telling you which cwd was tried.
+created with. While the server retains the session record, the engine rejects a
+mismatch before the CLI starts. After a server restart, persisted SDK metadata
+is used to verify the requested cwd before the resumed query starts.
 
 A follow-up inherits the permission level recorded for the session and cannot
 ask for more: `claude-reply` has no `writable` parameter. A server restart drops
@@ -163,7 +164,8 @@ Read-only is the default: no `Write`, `Edit`, `NotebookEdit`, `Bash`, `Monitor`,
 `REPL` or `TaskCreate`/`TaskUpdate`/`TaskStop`, and inline `!` shell commands in
 skills are disabled too. Delegation, scheduling, worktree switching, messaging,
 publishing and interactive tools (`Task`/`Agent`, `Workflow`, `Cron*`,
-`ScheduleWakeup`, `RemoteTrigger`, `SendMessage`, `SendFeedback`,
+`ScheduleWakeup`, `RemoteTrigger`, `Brief`, `SendUserMessage`, `SendMessage`,
+`SendFeedback`,
 `PushNotification`, `Enter/ExitWorktree`, `DesignSync`, `Projects`, `Artifact`,
 `AskUserQuestion`, `Enter/ExitPlanMode`) are blocked in **both** modes.
 `writable: true` adds the file and shell tools and runs without permission

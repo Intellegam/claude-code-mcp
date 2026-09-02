@@ -8,7 +8,7 @@
 import test, { after, before, describe } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { sleep, toolError } from "../helpers/harness.mjs";
+import { sessionIdFrom, sleep, toolError } from "../helpers/harness.mjs";
 import { LONG_STREAM, startTier2 } from "../helpers/fixtures.mjs";
 
 /** Direct children of `pid`. `pgrep` exits 1 — i.e. throws — when there are none. */
@@ -37,16 +37,28 @@ describe("shutdown mid-turn", () => {
   let ctx;
 
   before(async () => {
-    ctx = await startTier2({ turns: [LONG_STREAM] });
+    ctx = await startTier2({ turns: [{ text: "seeded" }, LONG_STREAM] });
   });
 
   after(async () => ctx?.stop());
 
   test("SIGTERM answers the pending request and reaps the CLI child", async () => {
+    const seed = await ctx.server.call(
+      "claude",
+      { prompt: "Say seeded.", cwd: ctx.sandbox.repo },
+      120000,
+    );
+    const sessionId = sessionIdFrom(seed);
+    await ctx.restart();
+
     // Deliberately not awaited: `call()` has already written the request.
     const pending = ctx.server.call(
-      "claude",
-      { prompt: "Count to 500, one per line.", cwd: ctx.sandbox.repo },
+      "claude-reply",
+      {
+        sessionId,
+        prompt: "Now count to 500, one per line.",
+        cwd: ctx.sandbox.repo,
+      },
       120000,
     );
 

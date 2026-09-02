@@ -10,7 +10,7 @@ what is not obvious from the code: the SDK mechanics the runner depends on, the
 order events are resolved in, and the trust model.
 
 Everything marked *verified* was established empirically against
-`@anthropic-ai/claude-agent-sdk@0.3.220` and its bundled CLI 2.1.x.
+`@anthropic-ai/claude-agent-sdk@0.3.258` and its bundled CLI 2.1.x.
 
 The turn/session engine is ported from codex-mcp: turn records, session records,
 the one-active-turn guard, the cancel watchdog, terminal states and snapshot
@@ -60,8 +60,11 @@ only once the turn has settled.
   runner's `onDone`; the orphan finishes exiting within about a second of losing
   its stdin.
 - **Resume is keyed by session id *and* cwd.** *Verified:* resume preserves the
-  session id, works after an interrupted turn and across server restarts, but
-  only from the same cwd — a mismatch surfaces as an error result with no init.
+  session id and works after an interrupted turn and across server restarts.
+  While the server retains the session record, the engine rejects a mismatched
+  cwd before spawning the CLI. After a server restart, the SDK adapter validates
+  the requested cwd against persisted session metadata before it starts the
+  resumed query.
 
 ## Terminal-state precedence
 
@@ -139,7 +142,8 @@ serve it:
 
 Always blocked, in both modes: `Task`/`Agent` (init reports the first name, the
 model sees the second), `Workflow`, `CronCreate`, `CronDelete`, `CronList`,
-`ScheduleWakeup`, `RemoteTrigger`, `SendMessage`, `SendFeedback`,
+`ScheduleWakeup`, `RemoteTrigger`, `Brief`, `SendUserMessage`, `SendMessage`,
+`SendFeedback`,
 `PushNotification`, `EnterWorktree`, `ExitWorktree`, `DesignSync`, `Projects`,
 `Artifact`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`. `writable`
 authorizes edits in the caller's repo — not delegation, not scheduled or
@@ -157,14 +161,16 @@ read-only. The same argument reaches past the tool list: `Skill` stays
 available, and a skill body's inline `!` commands are run by the CLI itself, so
 read-only also sets `disableSkillShellExecution`. *Verified:* that setting has
 to be passed as a JSON **string** — the SDK types accept a `Settings` object,
-but 0.3.220 forwards the value through `String()`, so an object arrives as
+but 0.3.258 forwards the value through `String()`, so an object arrives as
 `[object Object]` and the CLI exits with "Settings file not found". It lands in
 the flag-settings layer, which merges over the operator's files key by key.
 
 `TaskCreate`, `TaskUpdate` and `TaskStop` mutate session state, so they are
-read-only exclusions; `TaskGet`, `TaskList` and `TaskOutput` stay. Both lists
-are the tool surface as it actually exists at 0.3.220, and the tier-2 drift
-guard pins that surface so the next SDK bump has to be looked at.
+read-only exclusions; inspection tools (`ListAgents`, `TaskGet`, `TaskList`,
+`TaskOutput`) stay when offered. The default 0.3.258 surface includes
+`ListAgents` and `TaskOutput` but no longer includes `TaskGet` or `TaskList`.
+The tier-2 drift guard pins that surface so the next SDK bump has to be looked
+at.
 
 *Verified:* `disallowedTools` removes tools from the schema entirely rather than
 denying at call time; its MCP server-level specs remove every tool from a named
@@ -230,7 +236,8 @@ best-effort, and the docs say so.
 ## Known limitations
 
 - Sessions are in-memory: after a restart, `claude-reply` needs an explicit `cwd`
-  and falls back to read-only.
+  and falls back to read-only. Persisted SDK metadata is used only to verify the
+  cwd; the wrapper's permission level and latest-turn state are not restored.
 - An async submission blocks until `system/init` (~0.3–3s).
 - A turn whose child never starts and never exits is only released by the turn
   timeout.

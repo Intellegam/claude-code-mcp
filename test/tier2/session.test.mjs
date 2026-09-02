@@ -2,13 +2,16 @@
  * Integration tier: session resume against the real CLI's on-disk transcripts.
  */
 
-import test, { after, before, describe } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import test, { after, before, describe } from "node:test";
 import { sessionIdFrom, toolError } from "../helpers/harness.mjs";
 import { startTier2 } from "../helpers/fixtures.mjs";
 
 describe("resume", () => {
   let ctx;
+  let repoLink;
   let sessionId;
 
   before(async () => {
@@ -19,6 +22,8 @@ describe("resume", () => {
         { text: "Still kumquat." },
       ],
     });
+    repoLink = path.join(ctx.sandbox.root, "repo-link");
+    fs.symlinkSync(ctx.sandbox.repo, repoLink, "dir");
   });
 
   after(async () => ctx?.stop());
@@ -26,7 +31,7 @@ describe("resume", () => {
   test("a first turn returns a session id", async () => {
     const response = await ctx.server.call(
       "claude",
-      { prompt: "Remember: the magic word is kumquat.", cwd: ctx.sandbox.repo },
+      { prompt: "Remember: the magic word is kumquat.", cwd: repoLink },
       120000,
     );
     assert.equal(response.error, undefined, JSON.stringify(response.error));
@@ -37,7 +42,7 @@ describe("resume", () => {
   test("a reply keeps the id and replays the conversation", async () => {
     const response = await ctx.server.call(
       "claude-reply",
-      { sessionId, prompt: "What is the magic word?", cwd: ctx.sandbox.repo },
+      { sessionId, prompt: "What is the magic word?", cwd: repoLink },
       120000,
     );
     assert.equal(response.error, undefined, JSON.stringify(response.error));
@@ -58,7 +63,8 @@ describe("resume", () => {
     );
     const failure = toolError(response);
     assert.match(failure, /same cwd the session was created in/);
-    assert.match(failure, /No conversation found with session ID/);
+    assert.match(failure, new RegExp(ctx.sandbox.repo));
+    assert.match(failure, new RegExp(ctx.sandbox.root));
     assert.match(failure, /sessionId: /, "the handle is kept");
   });
 
@@ -66,10 +72,25 @@ describe("resume", () => {
     await ctx.restart();
     const response = await ctx.server.call(
       "claude-reply",
-      { sessionId, prompt: "Once more: the magic word?", cwd: ctx.sandbox.repo },
+      { sessionId, prompt: "Once more: the magic word?", cwd: repoLink },
       120000,
     );
     assert.equal(response.error, undefined, JSON.stringify(response.error));
     assert.equal(sessionIdFrom(response), sessionId);
+  });
+
+  test("the original cwd is still enforced after a server restart", async () => {
+    await ctx.restart();
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const response = await ctx.server.call(
+        "claude-reply",
+        { sessionId, prompt: "And from elsewhere?", cwd: ctx.sandbox.root },
+        120000,
+      );
+      const failure = toolError(response);
+      assert.match(failure, /same cwd the session was created in/);
+      assert.match(failure, new RegExp(ctx.sandbox.repo));
+      assert.match(failure, new RegExp(ctx.sandbox.root));
+    }
   });
 });
