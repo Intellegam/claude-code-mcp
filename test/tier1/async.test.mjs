@@ -2,7 +2,6 @@ import test, { after, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
   pollUntil,
-  sessionIdFrom,
   sleep,
   snapshot,
   spawnServer,
@@ -15,454 +14,277 @@ function interruptReport(output) {
   return JSON.parse(match[1]);
 }
 
-describe("async submissions", () => {
+describe("asynchronous session API", () => {
   const server = spawnServer();
   after(() => server.close());
 
-  test("start, poll, and collect the result", async () => {
+  test("submission waits for init, then returns the stable native session id", async () => {
     await server.init();
+    const started = Date.now();
     const submitted = snapshot(
-      await server.call("claude", { prompt: "#work=150 async hello", async: true }),
-    );
-
-    assert.ok(submitted.sessionId, "sessionId available immediately");
-    assert.equal(submitted.toolName, "claude");
-    // Init's resolution — the assistant message (and its model) come later.
-    assert.equal(submitted.model, "mock-model-1");
-    assert.equal(submitted.done, false);
-    assert.equal(submitted.status, "running");
-    assert.equal(submitted.output, "");
-    assert.equal(submitted.cancelRequested, false);
-    assert.equal(submitted.error, null);
-    assert.equal(submitted.finishedAt, null);
-    assert.match(submitted.createdAt, /^\d{4}-\d{2}-\d{2}T/);
-    assert.match(submitted.elapsed, /\(running\)$/);
-
-    const final = snapshot(
-      await server.call("claude-result", {
-        sessionId: submitted.sessionId,
-        wait: true,
+      await server.call("claude", {
+        prompt: "#init=250 #work=400 first turn",
       }),
     );
-    assert.equal(final.status, "succeeded");
-    assert.equal(final.done, true);
+
+    assert.ok(Date.now() - started >= 200, "the call waited for system/init");
+    assert.ok(Date.now() - started < 1500, "the call did not wait for the answer");
+    assert.match(submitted.sessionId, /^mock-/);
+    assert.equal(submitted.status, "running");
+    assert.equal(submitted.done, false);
+
+    const first = await pollUntil(server, submitted.sessionId, (state) => state.done);
+    assert.equal(first.status, "succeeded");
+    assert.match(first.output, /first turn/);
+
+    const reply = snapshot(
+      await server.call("claude-reply", {
+        sessionId: submitted.sessionId,
+        prompt: "#work=300 follow-up",
+      }),
+    );
+    assert.equal(reply.sessionId, submitted.sessionId);
+    assert.equal(reply.status, "running");
+
+    const final = await pollUntil(server, submitted.sessionId, (state) => state.done);
     assert.equal(final.sessionId, submitted.sessionId);
-    assert.equal(final.model, "mock-model-2");
-    assert.match(final.output, /Mock response to: async hello/);
-    assert.equal(final.error, null);
-    assert.match(final.finishedAt, /^\d{4}-\d{2}-\d{2}T/);
-    assert.match(final.elapsed, /^\d+s$/);
+    assert.match(final.output, /follow-up/);
   });
 
-  test("claude-result without wait returns immediately", async () => {
+  test("startup failures return a terminal error instead of a session handle", async () => {
+    const failed = await server.call("claude", {
+      prompt: "#noinit cannot start",
+    });
+    assert.match(toolError(failed), /error_during_execution/);
+  });
+
+  test("a stuck initialization returns a bounded actionable error", async () => {
+    const bounded = spawnServer({
+      env: {
+        CLAUDE_INIT_TIMEOUT_MS: "100",
+        CLAUDE_CANCEL_WATCHDOG_MS: "100",
+      },
+    });
+    await bounded.init();
+    const started = Date.now();
+    try {
+      const failed = await bounded.call("claude", {
+        prompt: "#init=6000 never ready",
+      });
+      assert.match(toolError(failed), /did not initialize within 100ms/);
+      assert.ok(Date.now() - started < 1000, "the MCP request was bounded");
+      assert.deepEqual((await bounded.request("ping")).result, {});
+
+      const seed = snapshot(await bounded.call("claude", { prompt: "seed" }));
+      await pollUntil(bounded, seed.sessionId, (state) => state.done);
+      const replyFailure = await bounded.call("claude-reply", {
+        sessionId: seed.sessionId,
+        prompt: "#init=6000 stalled reply",
+      });
+      assert.match(toolError(replyFailure), /did not initialize within 100ms/);
+
+      const retry = snapshot(
+        await bounded.call("claude-reply", {
+          sessionId: seed.sessionId,
+          prompt: "retry immediately",
+        }),
+      );
+      assert.equal(retry.sessionId, seed.sessionId);
+      assert.equal(
+        (await pollUntil(bounded, seed.sessionId, (state) => state.done)).status,
+        "succeeded",
+      );
+    } finally {
+      await bounded.close();
+    }
+  });
+
+  test("every terminal pre-init outcome is a tool error", async () => {
+    const bounded = spawnServer({
+      env: {
+        CLAUDE_TIMEOUT_MS: "50",
+        CLAUDE_CANCEL_WATCHDOG_MS: "50",
+        CLAUDE_INIT_TIMEOUT_MS: "500",
+      },
+    });
+    await bounded.init();
+    try {
+      const failed = await bounded.call("claude", {
+        prompt: "#init=6000 turn deadline first",
+      });
+      assert.match(toolError(failed), /timed out/);
+    } finally {
+      await bounded.close();
+    }
+  });
+
+  test("claude-result always returns the current state immediately", async () => {
     const submitted = snapshot(
-      await server.call("claude", { prompt: "#work=4000 slow", async: true }),
+      await server.call("claude", { prompt: "#work=5000 slow" }),
     );
-    const before = Date.now();
+    const started = Date.now();
     const current = snapshot(
       await server.call("claude-result", { sessionId: submitted.sessionId }),
     );
-    assert.ok(Date.now() - before < 1500, "a round trip, not the turn");
-    assert.equal(current.done, false);
+    assert.ok(Date.now() - started < 500, "result did not wait for the turn");
     assert.equal(current.status, "running");
+    assert.equal(current.done, false);
 
     await server.call("claude-cancel", { sessionId: submitted.sessionId });
-    await server.call("claude-result", {
-      sessionId: submitted.sessionId,
-      wait: true,
-    });
+    await pollUntil(server, submitted.sessionId, (state) => state.done);
   });
 
-  test("cancel while running yields cancelled with one interrupt", async () => {
+  test("runtime failure is reported through the same session", async () => {
     const submitted = snapshot(
-      await server.call("claude", { prompt: "#work=5000 cancel me", async: true }),
+      await server.call("claude", { prompt: "#work=100 #error boom" }),
     );
-    await pollUntil(server, submitted.sessionId, (s) => s.status === "running");
+    const final = await pollUntil(server, submitted.sessionId, (state) => state.done);
+    assert.equal(final.status, "failed");
+    assert.equal(final.sessionId, submitted.sessionId);
+    assert.match(final.error.message, /mock failure/);
+  });
 
-    const cancelled = snapshot(
+  test("cancelling a running turn preserves the stable session id", async () => {
+    const submitted = snapshot(
+      await server.call("claude", { prompt: "#work=5000 cancel me" }),
+    );
+    const cancelling = snapshot(
       await server.call("claude-cancel", { sessionId: submitted.sessionId }),
     );
-    assert.equal(cancelled.cancelRequested, true);
+    assert.equal(cancelling.sessionId, submitted.sessionId);
+    assert.equal(cancelling.cancelRequested, true);
 
-    const final = snapshot(
-      await server.call("claude-result", {
-        sessionId: submitted.sessionId,
-        wait: true,
-      }),
-    );
+    const final = await pollUntil(server, submitted.sessionId, (state) => state.done);
     assert.equal(final.status, "cancelled");
-    assert.equal(final.done, true);
-    assert.equal(final.cancelRequested, true);
-    assert.equal(final.error, null);
     assert.deepEqual(interruptReport(final.output), {
       interrupts: 1,
       preInitInterrupts: 0,
     });
   });
 
-  test("a cancel arriving before init is buffered and delivered once", async () => {
-    const first = await server.call("claude", { prompt: "seed" });
-    const sessionId = sessionIdFrom(first);
+  test("one active turn per session is enforced", async () => {
+    const seed = snapshot(await server.call("claude", { prompt: "seed" }));
+    await pollUntil(server, seed.sessionId, (state) => state.done);
 
-    // The reply's session id is known up front, so a cancel can beat init.
-    // Deliberately not awaited: `call()` has already written the request.
-    const pending = server.call("claude-reply", {
-      sessionId,
-      prompt: "#init=800 #work=5000 slow reply",
-      async: true,
-    });
-    await sleep(50);
-    // Assert the precondition: without it a slow machine silently degrades this
-    // into a post-init cancel, and the buffering path goes untested.
-    const before = snapshot(await server.call("claude-result", { sessionId }));
-    assert.equal(before.status, "starting", "the turn has not initialized yet");
-
-    const cancelled = snapshot(
-      await server.call("claude-cancel", { sessionId }),
-    );
-    assert.equal(cancelled.cancelRequested, true);
-    assert.equal(cancelled.status, "cancelling");
-    await pending;
-
-    const started = Date.now();
-    const final = snapshot(
-      await server.call("claude-result", { sessionId, wait: true }),
-    );
-    assert.equal(final.status, "cancelled");
-    assert.ok(Date.now() - started < 4000, "cancelled well before the 5s turn");
-    assert.deepEqual(interruptReport(final.output), {
-      interrupts: 1,
-      preInitInterrupts: 0,
-    });
-  });
-
-  test("cancel after completion is a no-op", async () => {
-    const submitted = snapshot(
-      await server.call("claude", { prompt: "fast", async: true }),
-    );
-    await server.call("claude-result", {
-      sessionId: submitted.sessionId,
-      wait: true,
-    });
-    const cancelled = snapshot(
-      await server.call("claude-cancel", { sessionId: submitted.sessionId }),
-    );
-    assert.equal(cancelled.status, "succeeded");
-    assert.equal(cancelled.cancelRequested, false);
-  });
-
-  test("one active turn per session", async () => {
-    const submitted = snapshot(
-      await server.call("claude", { prompt: "#work=5000 first", async: true }),
-    );
-    await pollUntil(server, submitted.sessionId, (s) => s.status === "running");
-
-    const rejected = snapshot(
+    const active = snapshot(
       await server.call("claude-reply", {
-        sessionId: submitted.sessionId,
-        prompt: "second",
-        async: true,
+        sessionId: seed.sessionId,
+        prompt: "#work=5000 first reply",
       }),
     );
-    assert.equal(rejected.status, "failed");
-    assert.equal(rejected.done, true);
-    assert.equal(rejected.error.source, "setup");
-    assert.match(rejected.error.message, /already has an active turn/);
+    assert.equal(active.status, "running");
 
-    // The running turn is untouched and still observable.
-    const running = snapshot(
-      await server.call("claude-result", { sessionId: submitted.sessionId }),
-    );
-    assert.equal(running.done, false);
-
-    await server.call("claude-cancel", { sessionId: submitted.sessionId });
-    await server.call("claude-result", {
-      sessionId: submitted.sessionId,
-      wait: true,
+    const rejected = await server.call("claude-reply", {
+      sessionId: seed.sessionId,
+      prompt: "second reply",
     });
+    assert.match(toolError(rejected), /already has an active turn/);
+
+    await server.call("claude-cancel", { sessionId: seed.sessionId });
+    await pollUntil(server, seed.sessionId, (state) => state.done);
   });
 
-  test("invalid async args return a failed snapshot, not a protocol error", async () => {
-    const snap = snapshot(await server.call("claude", { async: true }));
-    assert.equal(snap.toolName, "claude");
-    assert.equal(snap.status, "failed");
-    assert.equal(snap.done, true);
-    assert.equal(snap.sessionId, null);
-    assert.equal(snap.error.source, "setup");
-    assert.match(snap.error.message, /non-empty prompt/);
-  });
-
-  test("unknown session ids are rejected", async () => {
-    const result = await server.call("claude-result", { sessionId: "nope" });
-    assert.match(toolError(result), /Unknown sessionId/);
-    const cancel = await server.call("claude-cancel", { sessionId: "nope" });
-    assert.match(toolError(cancel), /Unknown sessionId/);
-  });
-
-  test("claude-result(wait) answers about the turn it observed", async () => {
-    const submitted = snapshot(
-      await server.call("claude", { prompt: "seed", async: true }),
-    );
-    const { sessionId } = submitted;
-    await server.call("claude-result", { sessionId, wait: true });
-
-    // Both requests are dispatched before either can await, so the reply
-    // attaches a *new* turn while the wait is in flight. The wait was asked
-    // about the finished turn and must answer about that one.
-    const [waited, replied] = await Promise.all(
-      server.callInOneChunk([
-        { name: "claude-result", args: { sessionId, wait: true } },
-        {
-          name: "claude-reply",
-          args: { sessionId, prompt: "#work=300 follow-up", async: true },
-        },
-      ]),
-    );
-    const observed = snapshot(waited);
-    assert.equal(observed.done, true, "the finished turn is still done");
-    assert.equal(observed.status, "succeeded");
-    assert.equal(snapshot(replied).done, false, "the reply really did start");
-
-    await server.call("claude-result", { sessionId, wait: true });
-  });
-
-  test("sessions run in parallel without interfering", async () => {
+  test("independent sessions run in parallel", async () => {
     const a = snapshot(
-      await server.call("claude", { prompt: "#work=200 alpha", async: true }),
+      await server.call("claude", { prompt: "#work=200 alpha" }),
     );
     const b = snapshot(
-      await server.call("claude", { prompt: "#work=200 beta", async: true }),
+      await server.call("claude", { prompt: "#work=200 beta" }),
     );
     assert.notEqual(a.sessionId, b.sessionId);
 
     const [finalA, finalB] = await Promise.all([
-      server
-        .call("claude-result", { sessionId: a.sessionId, wait: true })
-        .then(snapshot),
-      server
-        .call("claude-result", { sessionId: b.sessionId, wait: true })
-        .then(snapshot),
+      pollUntil(server, a.sessionId, (state) => state.done),
+      pollUntil(server, b.sessionId, (state) => state.done),
     ]);
     assert.match(finalA.output, /alpha/);
     assert.match(finalB.output, /beta/);
   });
+
+  test("invalid submissions and unknown sessions are actionable", async () => {
+    assert.match(toolError(await server.call("claude", {})), /non-empty prompt/);
+
+    assert.match(
+      toolError(await server.call("claude-result", { sessionId: "missing" })),
+      /Unknown sessionId/,
+    );
+    assert.match(
+      toolError(await server.call("claude-cancel", { sessionId: "missing" })),
+      /Unknown sessionId/,
+    );
+  });
 });
 
-describe("notifications/cancelled", () => {
-  const server = spawnServer();
+describe("request cancellation during initialization", () => {
+  const server = spawnServer({
+    env: { CLAUDE_CANCEL_WATCHDOG_MS: "150" },
+  });
   after(() => server.close());
 
-  test("cancels the turn the request started and sends no response", async () => {
+  test("closes a fresh pre-init turn that has no public session id", async () => {
     await server.init();
-    // A reply, so the session id is known before the request is cancelled.
-    const seeded = await server.call("claude", { prompt: "seed" });
-    const sessionId = sessionIdFrom(seeded);
-
     const { id, response } = server.beginCall(
-      "claude-reply",
-      { sessionId, prompt: "#work=8000 slow reply" },
-      2000,
-    );
-    await pollUntil(server, sessionId, (s) => s.status === "running");
-
-    server.send({
-      jsonrpc: "2.0",
-      method: "notifications/cancelled",
-      params: { requestId: id, reason: "the client went away" },
-    });
-
-    const final = await pollUntil(server, sessionId, (s) => s.done);
-    assert.equal(final.status, "cancelled");
-    assert.deepEqual(interruptReport(final.output), {
-      interrupts: 1,
-      preInitInterrupts: 0,
-    });
-
-    // Per MCP the server must not answer a request that was cancelled.
-    await assert.rejects(
-      () => response,
-      /timed out waiting for response/,
-      "the cancelled request was answered anyway",
-    );
-  });
-
-  test("reaches an async submission that never reached init", async () => {
-    // Same window, other path. The submission response is what carries the
-    // sessionId, so a cancel landing before it leaves the client with no handle
-    // at all — a turn left running here could never be reached by
-    // `claude-cancel`, and would burn the full turn timeout.
-    const seeded = await server.call("claude", { prompt: "seed" });
-    const sessionId = sessionIdFrom(seeded);
-
-    const { id, response } = server.beginCall(
-      "claude-reply",
-      { sessionId, prompt: "#init=6000 stalled startup", async: true },
-      3000,
+      "claude",
+      { prompt: "#init=6000 stalled fresh startup" },
+      1000,
     );
     await sleep(50);
-    const before = snapshot(await server.call("claude-result", { sessionId }));
-    assert.equal(before.status, "starting", "the turn has not initialized yet");
 
     server.send({
       jsonrpc: "2.0",
       method: "notifications/cancelled",
       params: { requestId: id, reason: "the client went away" },
     });
-
-    const started = Date.now();
-    const final = snapshot(
-      await server.call("claude-result", { sessionId, wait: true }),
-    );
-    assert.equal(final.status, "cancelled");
-    assert.equal(final.error.source, "cancel", "the watchdog forced it");
-    assert.ok(Date.now() - started < 4000, "not held to the 8s turn timeout");
 
     await assert.rejects(() => response, /timed out waiting for response/);
+    assert.deepEqual((await server.request("ping")).result, {});
   });
 
-  test("reaches a turn that never reached init", async () => {
-    // The sync handler has to hold the turn from the first tick. A child that
-    // stalls before `system/init` has no session id yet — nothing a cancel
-    // could look up — so the turn would otherwise run to its full timeout. The
-    // cancel watchdog is what bounds it instead.
-    const seeded = await server.call("claude", { prompt: "seed" });
-    const sessionId = sessionIdFrom(seeded);
+  test("stops the pre-init turn and sends no response", async () => {
+    await server.init();
+    const seed = snapshot(await server.call("claude", { prompt: "seed" }));
+    await pollUntil(server, seed.sessionId, (state) => state.done);
 
     const { id, response } = server.beginCall(
       "claude-reply",
-      { sessionId, prompt: "#init=6000 stalled startup" },
-      3000,
+      {
+        sessionId: seed.sessionId,
+        prompt: "#init=6000 stalled startup",
+      },
+      1000,
     );
     await sleep(50);
-    // Assert the precondition: on a slow machine this would otherwise quietly
-    // become a post-init cancel and stop testing the pre-init path.
-    const before = snapshot(await server.call("claude-result", { sessionId }));
-    assert.equal(before.status, "starting", "the turn has not initialized yet");
-
-    server.send({
-      jsonrpc: "2.0",
-      method: "notifications/cancelled",
-      params: { requestId: id, reason: "the client went away" },
-    });
-
-    const started = Date.now();
-    const final = snapshot(
-      await server.call("claude-result", { sessionId, wait: true }),
+    const before = snapshot(
+      await server.call("claude-result", { sessionId: seed.sessionId }),
     );
-    assert.equal(final.status, "cancelled");
-    assert.equal(final.error.source, "cancel", "the watchdog forced it");
-    assert.ok(Date.now() - started < 4000, "not held to the 8s turn timeout");
+    assert.equal(before.status, "starting");
 
-    await assert.rejects(() => response, /timed out waiting for response/);
-  });
-
-  test("releases a cancelled claude-result(wait) without stopping the turn", async () => {
-    // A waiter nobody will read must not stay parked on the turn — but the turn
-    // itself is only stopped through `claude-cancel`.
-    const submitted = snapshot(
-      await server.call("claude", { prompt: "#work=600 keep going", async: true }),
-    );
-    const { sessionId } = submitted;
-    // The waiter must outlive the turn: it is asserted to have gone unanswered
-    // once everything else has settled.
-    const { id, response } = server.beginCall(
-      "claude-result",
-      { sessionId, wait: true },
-      2500,
-    );
-    await sleep(50);
     server.send({
       jsonrpc: "2.0",
       method: "notifications/cancelled",
       params: { requestId: id },
     });
-    await sleep(50);
 
-    // The cancelled request is finished with, so its id is free again — while
-    // the server still held it, it would have suppressed this reply as belonging
-    // to a cancelled request. `ping` because a second `tools/call` would replace
-    // the entry rather than observe it.
-    const revived = await server.requestWithId(id, "ping", {}, 1000);
-    assert.deepEqual(revived.result, {}, "the request was released, not parked");
-
-    const running = snapshot(await server.call("claude-result", { sessionId }));
-    assert.equal(running.done, false, "the turn was not cancelled with the request");
-
-    const final = snapshot(
-      await server.call("claude-result", { sessionId, wait: true }),
-    );
-    assert.equal(final.status, "succeeded", "the turn finished on its own");
-    assert.equal(final.cancelRequested, false);
-
+    const final = await pollUntil(server, seed.sessionId, (state) => state.done);
+    assert.equal(final.status, "cancelled");
+    assert.equal(final.error.source, "cancel");
     await assert.rejects(() => response, /timed out waiting for response/);
-  });
-
-  test("a reused request id is not clobbered by its cancelled predecessor", async () => {
-    // Cancel a submission that is still settling, then reuse its id for a new
-    // long-poll: the predecessor must neither answer under the reused id when
-    // its turn settles nor delete the successor's `liveCalls` entry on the way
-    // out.
-    const work = snapshot(
-      await server.call("claude", {
-        prompt: "#work=900 keep going",
-        async: true,
-      }),
-    );
-    const first = server.beginCall("claude", { prompt: "#init=300 hi" }, 2500);
-    // Its waiter is replaced by the reuse below; only the timer remains.
-    first.response.catch(() => {});
-    await sleep(50);
-    server.send({
-      jsonrpc: "2.0",
-      method: "notifications/cancelled",
-      params: { requestId: first.id },
-    });
-    await sleep(50);
-
-    // The successor parks well past the predecessor's settle — a predecessor
-    // that still answers under this id resolves the long-poll with the wrong
-    // turn's result.
-    const final = snapshot(
-      await server.requestWithId(
-        first.id,
-        "tools/call",
-        {
-          name: "claude-result",
-          arguments: { sessionId: work.sessionId, wait: true },
-        },
-        3000,
-      ),
-    );
-    assert.equal(
-      final.status,
-      "succeeded",
-      "the successor's own answer, not the predecessor's",
-    );
-    assert.equal(final.sessionId, work.sessionId);
   });
 });
 
-describe("the turn timeout", () => {
+describe("turn timeout", () => {
   const server = spawnServer({
-    env: { CLAUDE_TIMEOUT_MS: "400", CLAUDE_CANCEL_WATCHDOG_MS: "800" },
+    env: { CLAUDE_TIMEOUT_MS: "120", CLAUDE_CANCEL_WATCHDOG_MS: "300" },
   });
   after(() => server.close());
 
-  test("a turn past its timeout becomes timed_out", async () => {
+  test("a hung turn becomes timed_out without holding a result request", async () => {
     await server.init();
     const submitted = snapshot(
-      await server.call("claude", { prompt: "#work=9000 slow", async: true }),
+      await server.call("claude", { prompt: "#work=9000 hung" }),
     );
-    const final = snapshot(
-      await server.call("claude-result", {
-        sessionId: submitted.sessionId,
-        wait: true,
-      }),
-    );
+    const final = await pollUntil(server, submitted.sessionId, (state) => state.done);
     assert.equal(final.status, "timed_out");
-    assert.equal(final.done, true);
-    assert.equal(final.cancelRequested, true);
-    assert.match(final.error.message, /timed out/);
     assert.equal(final.error.source, "timeout");
   });
 });

@@ -47,9 +47,12 @@ Test seams (read from the *server's* env, never from tool arguments):
 - **After an error result the message iterator throws.** That throw is expected
   and is suppressed when a result was already observed.
 - **`result` messages may have no `errors[]`.** Never index it unguarded.
-- **Resume is keyed by session id *and* cwd.** A different cwd is a hard failure,
-  not a new session. The engine adopts whatever id `system/init` reports, even
-  when it differs from the one being resumed.
+- **Resume is keyed by session id *and* cwd.** A different cwd or a different id
+  from `system/init` is a hard failure, not a new session.
+- **Submission waits only for `system/init`.** That handshake provides the one
+  stable native session ID used by reply, result, and cancel. It is bounded by
+  `CLAUDE_INIT_TIMEOUT_MS` (30s by default and as a hard maximum; it may only be
+  lowered). Never wait for the answer inside an MCP request.
 - **Authorization is two gates, and they are not interchangeable.** Exact
   `disallowedTools` specs hide the shipped bridge servers; the `PreToolUse`
   hook in `lib/isolation.js` only *denies* aliases (agent-bridge servers,
@@ -80,9 +83,8 @@ Test seams (read from the *server's* env, never from tool arguments):
 ### Run
 
 - `npm start` - start the server on stdio (an MCP client normally does this)
-- `node test/send.js claude "prompt"` - send one tool call by hand (`--async`,
-  `--writable`; also `claude-reply <sessionId> "prompt"`,
-  `claude-result <sessionId> [--wait]`, `claude-cancel <sessionId>`)
+- `node test/send.js claude "prompt"` - submit and poll one turn by hand
+  (`--writable`; also `claude-reply <sessionId> "prompt"`)
 
 ### Required Checks
 

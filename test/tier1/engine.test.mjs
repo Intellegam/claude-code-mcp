@@ -61,6 +61,18 @@ function fakeRunners(script) {
   return createRunner;
 }
 
+async function submitStart(engine, args) {
+  const turn = engine.beginStart(args);
+  await turn.readyPromise;
+  return turn;
+}
+
+async function submitReply(engine, args) {
+  const turn = engine.beginReply(args);
+  await turn.readyPromise;
+  return turn;
+}
+
 /**
  * Await a turn's terminal snapshot.
  *
@@ -69,12 +81,13 @@ function fakeRunners(script) {
  * open itself.
  */
 async function settled(engine, sessionId) {
-  const keepAlive = setInterval(() => {}, 5);
-  try {
-    return await engine.result({ sessionId, wait: true });
-  } finally {
-    clearInterval(keepAlive);
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    const current = engine.result({ sessionId });
+    if (current.done) return current;
+    await new Promise((resolve) => setTimeout(resolve, 5));
   }
+  throw new Error(`session ${sessionId} did not settle`);
 }
 
 /** An engine whose first turn is already initialized as `sessionId`. */
@@ -86,7 +99,7 @@ async function startedEngine(sessionId = "s-1", engineOptions = {}) {
     cancelWatchdogMs: 60_000,
     ...engineOptions,
   });
-  const turn = await engine.submitStart({ prompt: "hello", cwd: "/repo" });
+  const turn = await submitStart(engine, { prompt: "hello", cwd: "/repo" });
   return { engine, turn, runners: createRunner.created };
 }
 
@@ -252,7 +265,7 @@ describe("cancelling a turn that has not initialized", () => {
     // what bounds the wait.
     const keepAlive = setInterval(() => {}, 5);
     try {
-      await turn.donePromise;
+      await turn.readyPromise;
     } finally {
       clearInterval(keepAlive);
     }
@@ -275,37 +288,40 @@ describe("cancelling a turn that has not initialized", () => {
     assert.equal(turn.cancelRequested, true);
   });
 
-  test("a resume re-keyed onto a busy session fails under the caller's id", async () => {
-    // The CLI is free to answer a resume with another session's id. When that
-    // id has a live turn the claim is rejected — and the failure must settle
-    // under the id the caller used, or the caller's session is left pointing
-    // at a turn record the settle path just deleted.
+  test("a reply that reports another id fails under the stable id", async () => {
     const { engine, runners } = stalledEngine();
-
-    const busy = engine.beginStart({ prompt: "hold the line", cwd: "/repo" });
-    runners[0].init("taken");
-    assert.equal(busy.status, "running");
-
     const reply = engine.beginReply({ sessionId: "mine", prompt: "resume" });
-    runners[1].init("taken");
+    runners[0].init("different");
 
     assert.equal(reply.status, "failed");
-    assert.match(reply.error.message, /already has an active turn/);
+    assert.match(reply.error.message, /refusing to change the public sessionId/);
     assert.equal(reply.sessionId, "mine", "settled under the caller's id");
 
-    // The caller's session still resolves to a real turn record…
     const snapshot = await engine.result({ sessionId: "mine" });
     assert.equal(snapshot.status, "failed");
-    // …the busy session was left alone…
-    assert.equal(busy.status, "running");
-    // …and the caller's session is not wedged: it accepts the next reply.
     const retry = engine.beginReply({ sessionId: "mine", prompt: "again" });
     assert.equal(retry.status, "starting");
+  });
+
+  test("an initialization timeout settles and closes immediately", async () => {
+    const { engine, runners } = stalledEngine();
+    const turn = engine.beginStart({ prompt: "hello", cwd: "/repo" });
+
+    assert.equal(
+      engine.failBeforeInitialization(turn, "init deadline"),
+      true,
+    );
+    await Promise.resolve();
+
+    assert.equal(turn.status, "failed");
+    assert.equal(turn.error.source, "init_timeout");
+    assert.equal(runners[0].closed, true);
+    assert.equal(engine._turns.size, 0, "no unreachable turn is retained");
   });
 });
 
 describe("sessions", () => {
-  test("a failed sync turn keeps the sessionId in its error", async () => {
+  test("a failed reply stays observable under the stable session id", async () => {
     const createRunner = fakeRunners((runner, index) => {
       runner.init("s-1");
       if (index === 1) {
@@ -318,25 +334,26 @@ describe("sessions", () => {
     });
     const engine = createEngine({ createRunner, timeoutMs: 60_000 });
 
-    await engine.submitStart({ prompt: "hi", cwd: "/repo" });
+    await submitStart(engine, { prompt: "hi", cwd: "/repo" });
     createRunner.created[0].result({ text: "ok" });
     await settled(engine, "s-1");
 
-    await assert.rejects(
-      () => engine.runReply({ sessionId: "s-1", prompt: "again" }),
-      /^Error: boom \(sessionId: s-1 — use claude-reply\/claude-result to continue\)$/,
-    );
+    const reply = await submitReply(engine, { sessionId: "s-1", prompt: "again" });
+    const failed = await settled(engine, reply.sessionId);
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.sessionId, "s-1");
+    assert.match(failed.error.message, /boom/);
   });
 
   test("a known session refuses the wrong cwd and keeps its recorded cwd", async () => {
     const createRunner = fakeRunners((runner) => runner.init("s-1"));
     const engine = createEngine({ createRunner, timeoutMs: 60_000 });
 
-    await engine.submitStart({ prompt: "hi", cwd: "/repo/right" });
+    await submitStart(engine, { prompt: "hi", cwd: "/repo/right" });
     createRunner.created[0].result({ text: "ok" });
     await settled(engine, "s-1");
 
-    const rejected = await engine.submitReply({
+    const rejected = await submitReply(engine, {
       sessionId: "s-1",
       prompt: "again",
       cwd: "/repo/wrong",
@@ -346,45 +363,31 @@ describe("sessions", () => {
     assert.equal(createRunner.created.length, 1, "no CLI child was spawned");
 
     // A later reply with no cwd must still resume from the cwd that worked.
-    await engine.submitReply({ sessionId: "s-1", prompt: "once more" });
+    await submitReply(engine, { sessionId: "s-1", prompt: "once more" });
     assert.equal(createRunner.created[1].options.cwd, "/repo/right");
   });
 
-  test("init adopting a different session id re-keys the session", async () => {
-    const createRunner = fakeRunners((runner, index) =>
-      runner.init(index === 0 ? "s-1" : "s-2"),
-    );
+  test("initialization requires a non-empty native session id", async () => {
+    const createRunner = fakeRunners((runner) => runner.init(""));
     const engine = createEngine({ createRunner, timeoutMs: 60_000 });
 
-    await engine.submitStart({ prompt: "hi", cwd: "/repo", writable: true });
-    createRunner.created[0].result({ text: "ok" });
-    await settled(engine, "s-1");
-
-    const turn = await engine.submitReply({ sessionId: "s-1", prompt: "again" });
-    assert.equal(turn.sessionId, "s-2", "the reported id is the live handle");
-    createRunner.created[1].result({ text: "resumed" });
-
-    const snap = await settled(engine, "s-2");
-    assert.equal(snap.status, "succeeded");
-    assert.equal(snap.sessionId, "s-2");
-    await assert.rejects(
-      () => engine.result({ sessionId: "s-1" }),
-      /Unknown sessionId/,
-    );
-    // The re-keyed record is the original one: its permission level survives.
-    assert.equal(createRunner.created[1].options.writable, true);
+    const turn = await submitStart(engine, { prompt: "hi", cwd: "/repo" });
+    assert.equal(turn.status, "failed");
+    assert.equal(turn.sessionId, null);
+    assert.match(turn.error.message, /without a sessionId/);
+    assert.equal(engine._turns.size, 0);
   });
 
   test("repeated replies do not grow the turn map", async () => {
     const createRunner = fakeRunners((runner) => runner.init("s-1"));
     const engine = createEngine({ createRunner, timeoutMs: 60_000 });
 
-    await engine.submitStart({ prompt: "hi", cwd: "/repo" });
+    await submitStart(engine, { prompt: "hi", cwd: "/repo" });
     createRunner.created[0].result({ text: "ok" });
     await settled(engine, "s-1");
 
     for (let i = 0; i < 5; i++) {
-      await engine.submitReply({ sessionId: "s-1", prompt: `turn ${i}` });
+      await submitReply(engine, { sessionId: "s-1", prompt: `turn ${i}` });
       createRunner.created[i + 1].result({ text: `answer ${i}` });
       await settled(engine, "s-1");
     }
@@ -396,9 +399,9 @@ describe("sessions", () => {
     // All client-repeatable: an unbounded map is a denial of service.
     const { engine, turn, runners } = await startedEngine();
 
-    await engine.submitStart({ prompt: "   " });
-    await engine.submitReply({ prompt: "no session id" });
-    await engine.submitReply({ sessionId: turn.sessionId, prompt: "collides" });
+    await submitStart(engine, { prompt: "   " });
+    await submitReply(engine, { prompt: "no session id" });
+    await submitReply(engine, { sessionId: turn.sessionId, prompt: "collides" });
     assert.equal(engine._turns.size, 1, "only the live turn is retained");
 
     runners[0].result({ text: "ok" });
@@ -407,17 +410,18 @@ describe("sessions", () => {
 
   test("shutdown settles live turns instead of leaving callers hanging", async () => {
     const { engine, turn, runners } = await startedEngine();
-    const pending = assert.rejects(
-      () => engine.runReply({ sessionId: turn.sessionId, prompt: "later" }),
-      /already has an active turn/,
-    );
+    const rejected = await submitReply(engine, {
+      sessionId: turn.sessionId,
+      prompt: "later",
+    });
+    assert.equal(rejected.status, "failed");
+    assert.match(rejected.error.message, /already has an active turn/);
     await engine.shutdown();
 
     assert.equal(runners[0].closed, true);
     const snap = await engine.result({ sessionId: turn.sessionId });
     assert.equal(snap.status, "failed");
     assert.equal(snap.error.source, "shutdown");
-    await pending;
   });
 
   test(
@@ -457,13 +461,13 @@ describe("model reporting", () => {
     const engine = createEngine({ createRunner, timeoutMs: 60_000 });
 
     // Turn 1: a mid-turn fallback overrides what init resolved.
-    await engine.submitStart({ prompt: "hi", cwd: "/repo" });
+    await submitStart(engine, { prompt: "hi", cwd: "/repo" });
     createRunner.created[0].model("model-fallback");
     createRunner.created[0].result({ text: "ok" });
     assert.equal((await settled(engine, "s-1")).model, "model-fallback");
 
     // Turn 2: a fresh turn reports its own announcement, not its predecessor's.
-    await engine.submitReply({ sessionId: "s-1", prompt: "again" });
+    await submitReply(engine, { sessionId: "s-1", prompt: "again" });
     createRunner.created[1].result({ text: "resumed" });
     assert.equal((await settled(engine, "s-1")).model, "model-new");
   });
@@ -475,7 +479,7 @@ describe("model reporting", () => {
     });
     const engine = createEngine({ createRunner, timeoutMs: 60_000 });
 
-    await engine.submitStart({ prompt: "hi", cwd: "/repo" });
+    await submitStart(engine, { prompt: "hi", cwd: "/repo" });
     createRunner.created[0].result({
       isError: true,
       subtype: "error_during_execution",

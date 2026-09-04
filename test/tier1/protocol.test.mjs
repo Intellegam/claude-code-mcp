@@ -21,6 +21,18 @@ describe("MCP protocol", () => {
     assert.match(response.result.instructions, /read-only/i);
   });
 
+  test("the initialization safety bound cannot exceed 30 seconds", async () => {
+    const oversized = spawnServer({
+      env: { CLAUDE_INIT_TIMEOUT_MS: "300000" },
+    });
+    try {
+      const response = await oversized.init();
+      assert.match(response.result.instructions, /at most 30000ms/);
+    } finally {
+      await oversized.close();
+    }
+  });
+
   test("tools/list returns the four claude tools", async () => {
     const response = await server.request("tools/list", {});
     const names = response.result.tools.map((tool) => tool.name);
@@ -33,7 +45,11 @@ describe("MCP protocol", () => {
     const claude = response.result.tools[0];
     assert.deepEqual(claude.inputSchema.required, ["prompt"]);
     assert.ok(claude.inputSchema.properties.writable);
-    assert.ok(claude.inputSchema.properties.async);
+    assert.equal(claude.inputSchema.properties.async, undefined);
+    const result = response.result.tools.find(
+      (tool) => tool.name === "claude-result",
+    );
+    assert.equal(result.inputSchema.properties.wait, undefined);
   });
 
   test("ping answers with an empty result", async () => {

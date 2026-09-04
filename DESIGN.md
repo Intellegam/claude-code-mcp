@@ -14,10 +14,15 @@ Everything marked *verified* was established empirically against
 
 The turn/session engine is ported from codex-mcp: turn records, session records,
 the one-active-turn guard, the cancel watchdog, terminal states and snapshot
-shapes are all the same, apart from the `model` field and `[MODEL: …]` trailer
-this server adds. What is dropped is codex-mcp's app-server connection
-layer: there is no persistent Claude daemon. Each turn spawns its own CLI child
-through the SDK, and continuity comes from `resume`.
+shapes are all the same, apart from the `model` field this server adds. What is
+dropped is codex-mcp's app-server connection layer: there is no persistent
+Claude daemon. Each turn spawns its own CLI child through the SDK, and
+continuity comes from `resume`.
+
+Submissions wait only for `system/init`, then return the stable native Claude
+`sessionId`. The answer continues asynchronously. `claude-result` is an
+immediate snapshot lookup and `claude-cancel` targets the active turn on that
+same session. No MCP request waits for the answer itself.
 
 ## The runner
 
@@ -31,13 +36,13 @@ only once the turn has settled.
 > file.
 
 - **`system/init`** marks initialization and carries the session id. It is
-  emitted once per *turn*, not per session. The id it reports is authoritative:
-  the engine adopts it even when it differs from the id being resumed.
+  emitted once per *turn*, not per session. A new session adopts the non-empty
+  id it reports; a reply must report the same id it was asked to resume or the
+  turn fails without changing the public handle.
   *Verified* (tier 2): it also carries the model the CLI resolved, and assistant
   messages carry the model that served them. The runner reports both through a
   single `onModel` event, last-write-wins — so a mid-turn fallback, if the CLI
-  performs one, reports truthfully — stored per turn for snapshots and the sync
-  `[MODEL: …]` trailer.
+  performs one, reports truthfully and stores it per turn for snapshots.
 - **Interrupt gating.** *Verified:* before init, `interrupt()` resolves but does
   nothing (a window of roughly 350ms for a fresh session, longer whenever the
   CLI start is slow). A cancel arriving in that window is buffered as
@@ -238,6 +243,9 @@ best-effort, and the docs say so.
 - Sessions are in-memory: after a restart, `claude-reply` needs an explicit `cwd`
   and falls back to read-only. Persisted SDK metadata is used only to verify the
   cwd; the wrapper's permission level and latest-turn state are not restored.
-- An async submission blocks until `system/init` (~0.3–3s).
-- A turn whose child never starts and never exits is only released by the turn
+- A submission waits up to `CLAUDE_INIT_TIMEOUT_MS` (30s by default and as a
+  hard maximum) for `system/init` because the native stable session ID does not
+  exist before then. The setting may shorten but cannot lengthen that ceiling.
+  Missing the bound immediately fails the turn, closes the child, and returns a
+  tool error; callers can retry without approaching an outer MCP transport
   timeout.

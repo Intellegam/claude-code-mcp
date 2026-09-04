@@ -57,11 +57,8 @@ describe("stderr capture", () => {
 });
 
 describe("persisted cwd validation", () => {
-  test("closing during metadata lookup does not start a query", async () => {
-    let finishLookup;
-    const lookup = new Promise((resolve) => {
-      finishLookup = resolve;
-    });
+  test("closing releases a hung metadata lookup without starting a query", async () => {
+    const lookup = new Promise(() => {});
     let queries = 0;
     const createRunner = createRunnerFactory({
       getSessionInfo: () => lookup,
@@ -76,11 +73,13 @@ describe("persisted cwd validation", () => {
       verifyResumeCwd: true,
     });
 
-    runner.start("prompt");
-    const closing = runner.close();
-    finishLookup({ cwd: "/repo" });
-    await closing;
-    await new Promise((resolve) => setImmediate(resolve));
+    let finishConsumer;
+    const consumerDone = new Promise((resolve) => {
+      finishConsumer = resolve;
+    });
+    runner.start("prompt", { onDone: finishConsumer });
+    await runner.close();
+    await consumerDone;
 
     assert.equal(queries, 0);
   });

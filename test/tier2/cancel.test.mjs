@@ -7,7 +7,12 @@
 
 import test, { after, before, describe } from "node:test";
 import assert from "node:assert/strict";
-import { sessionIdFrom, snapshot, sleep } from "../helpers/harness.mjs";
+import {
+  pollUntil,
+  runSession,
+  snapshot,
+  sleep,
+} from "../helpers/harness.mjs";
 import { LONG_STREAM, startTier2 } from "../helpers/fixtures.mjs";
 
 const CANCEL_ENV = { CLAUDE_CANCEL_WATCHDOG_MS: "30000" };
@@ -28,7 +33,6 @@ describe("cancelling a running turn", () => {
         {
           prompt: "Count to 500, one per line.",
           cwd: ctx.sandbox.repo,
-          async: true,
         },
         120000,
       ),
@@ -43,12 +47,10 @@ describe("cancelling a running turn", () => {
     );
     assert.equal(cancelled.cancelRequested, true);
 
-    const final = snapshot(
-      await ctx.server.call(
-        "claude-result",
-        { sessionId: submitted.sessionId, wait: true },
-        120000,
-      ),
+    const final = await pollUntil(
+      ctx.server,
+      submitted.sessionId,
+      (state) => state.done,
     );
     const elapsed = Date.now() - started;
     assert.equal(final.status, "cancelled");
@@ -71,12 +73,13 @@ describe("cancelling before the turn is up", () => {
   after(async () => ctx?.stop());
 
   test("a post-restart cancel racing the CLI startup is still delivered", async () => {
-    const seed = await ctx.server.call(
+    const seed = await runSession(
+      ctx.server,
       "claude",
       { prompt: "Say seeded.", cwd: ctx.sandbox.repo },
       120000,
     );
-    const sessionId = sessionIdFrom(seed);
+    const sessionId = seed.sessionId;
     await ctx.restart();
 
     // The reply's session id is known before persisted-cwd validation and the
@@ -89,7 +92,6 @@ describe("cancelling before the turn is up", () => {
         sessionId,
         prompt: "Now count to 500, one per line.",
         cwd: ctx.sandbox.repo,
-        async: true,
       },
       120000,
     );
@@ -109,8 +111,10 @@ describe("cancelling before the turn is up", () => {
     assert.equal(cancelled.done, false);
     await pending;
 
-    const final = snapshot(
-      await ctx.server.call("claude-result", { sessionId, wait: true }, 120000),
+    const final = await pollUntil(
+      ctx.server,
+      sessionId,
+      (state) => state.done,
     );
     const elapsed = Date.now() - started;
     assert.equal(final.status, "cancelled");

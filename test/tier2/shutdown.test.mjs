@@ -8,7 +8,7 @@
 import test, { after, before, describe } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { sessionIdFrom, sleep, toolError } from "../helpers/harness.mjs";
+import { runSession, sleep, snapshot } from "../helpers/harness.mjs";
 import { LONG_STREAM, startTier2 } from "../helpers/fixtures.mjs";
 
 /** Direct children of `pid`. `pgrep` exits 1 — i.e. throws — when there are none. */
@@ -42,25 +42,28 @@ describe("shutdown mid-turn", () => {
 
   after(async () => ctx?.stop());
 
-  test("SIGTERM answers the pending request and reaps the CLI child", async () => {
-    const seed = await ctx.server.call(
+  test("SIGTERM reaps the CLI child of an active turn", async () => {
+    const seed = await runSession(
+      ctx.server,
       "claude",
       { prompt: "Say seeded.", cwd: ctx.sandbox.repo },
       120000,
     );
-    const sessionId = sessionIdFrom(seed);
+    const sessionId = seed.sessionId;
     await ctx.restart();
 
-    // Deliberately not awaited: `call()` has already written the request.
-    const pending = ctx.server.call(
-      "claude-reply",
-      {
-        sessionId,
-        prompt: "Now count to 500, one per line.",
-        cwd: ctx.sandbox.repo,
-      },
-      120000,
+    const submitted = snapshot(
+      await ctx.server.call(
+        "claude-reply",
+        {
+          sessionId,
+          prompt: "Now count to 500, one per line.",
+          cwd: ctx.sandbox.repo,
+        },
+        120000,
+      ),
     );
+    assert.equal(submitted.done, false);
 
     // Wait for the CLI itself rather than a fixed delay — a signal that beats
     // the child would test nothing.
@@ -74,9 +77,6 @@ describe("shutdown mid-turn", () => {
     const exited = new Promise((resolve) => ctx.server.proc.once("exit", resolve));
     ctx.server.proc.kill("SIGTERM");
 
-    // The blocked sync call is answered rather than dropped on the floor.
-    const response = await pending;
-    assert.match(toolError(response), /shut down before the turn finished/);
     await exited;
 
     // The SDK's close() resolves before the CLI is actually gone; the child

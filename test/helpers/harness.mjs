@@ -254,21 +254,47 @@ export function mockTrailer(text) {
   return JSON.parse(match[1]);
 }
 
-export function sessionIdFrom(response) {
-  const text = response.result.content.map((c) => c.text).join("\n");
-  const match = /\[SESSION_ID: ([^\]]+)\]/.exec(text);
-  if (!match) throw new Error(`no session id in response: ${text}`);
-  return match[1];
-}
-
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Poll `claude-result` until the session reaches a status (or is done). */
-export async function pollUntil(server, sessionId, predicate, attempts = 100) {
-  for (let i = 0; i < attempts; i++) {
+export async function pollUntil(server, sessionId, predicate, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     const snap = snapshot(await server.call("claude-result", { sessionId }));
     if (predicate(snap)) return snap;
     await sleep(25);
   }
-  throw new Error(`session ${sessionId} never matched predicate`);
+  throw new Error(
+    `session ${sessionId} never matched predicate within ${timeoutMs}ms`,
+  );
+}
+
+/** Submit a turn and poll its non-blocking result endpoint to completion. */
+export async function runSession(server, name, args, timeoutMs = 120000) {
+  const submitted = snapshot(await server.call(name, args, timeoutMs));
+  if (submitted.done) return requireSuccess(submitted);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const current = snapshot(
+      await server.call(
+        "claude-result",
+        { sessionId: submitted.sessionId },
+        timeoutMs,
+      ),
+    );
+    if (current.done) return requireSuccess(current);
+    await sleep(25);
+  }
+  throw new Error(
+    `session ${submitted.sessionId} did not finish within ${timeoutMs}ms`,
+  );
+}
+
+function requireSuccess(snapshot) {
+  if (snapshot.status !== "succeeded") {
+    throw new Error(
+      `Claude session ${snapshot.sessionId ?? "unknown"} ${snapshot.status}: ${snapshot.error?.message ?? "no error detail"}`,
+    );
+  }
+  return snapshot;
 }
