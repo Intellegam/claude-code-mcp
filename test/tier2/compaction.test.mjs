@@ -12,10 +12,11 @@ import { runSession } from "../helpers/harness.mjs";
 
 async function configuredSnapshot(window) {
   const ctx = await startTier2({
-    env:
-      window == null
-        ? {}
-        : { CLAUDE_CODE_MCP_AUTO_COMPACT_WINDOW: String(window) },
+    env: {
+      // Keep the installed-CLI assertion deterministic when the test runner
+      // itself has an MCP compaction override configured.
+      CLAUDE_CODE_MCP_AUTO_COMPACT_WINDOW: String(window ?? 320_000),
+    },
     turns: [{ text: "done" }],
   });
   try {
