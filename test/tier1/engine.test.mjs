@@ -495,6 +495,30 @@ describe("model reporting", () => {
 });
 
 describe("context and compaction telemetry", () => {
+  test("effective context fields stay unknown without a CLI report", async () => {
+    const createRunner = fakeRunners((runner) => runner.init("s-1"));
+    const engine = createEngine({
+      createRunner,
+      timeoutMs: 60_000,
+      autoCompactWindow: 320_000,
+    });
+
+    const turn = await submitStart(engine, { prompt: "hi", cwd: "/repo" });
+    createRunner.created[0].usage({ contextTokens: 271_005 });
+    createRunner.created[0].result({
+      text: "ok",
+      modelContextWindow: 1_000_000,
+    });
+
+    const snap = await settled(engine, turn.sessionId);
+    assert.equal(snap.contextWindow, null);
+    assert.equal(snap.contextPercent, null);
+    assert.equal(snap.autoCompactThreshold, null);
+    assert.equal(snap.isAutoCompactEnabled, null);
+    assert.equal(snap.autoCompactWindow, 320_000);
+    assert.equal(snap.modelContextWindow, 1_000_000);
+  });
+
   test("snapshots expose authoritative context and effective compaction state", async () => {
     const createRunner = fakeRunners((runner) => runner.init("s-1"));
     const engine = createEngine({
