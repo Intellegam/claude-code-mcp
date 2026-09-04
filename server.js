@@ -20,8 +20,9 @@ import {
   DEFAULT_TIMEOUT_MS,
 } from "./lib/engine.js";
 import { createRunnerFactory, loadSdk } from "./lib/claude-runner.js";
+import { resolveAutoCompactWindow } from "./lib/isolation.js";
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 const TIMEOUT_MS =
   parseInt(process.env.CLAUDE_TIMEOUT_MS, 10) || DEFAULT_TIMEOUT_MS;
 const CANCEL_WATCHDOG_MS =
@@ -33,6 +34,7 @@ const INIT_TIMEOUT_MS = positiveInteger(
   MAX_INIT_TIMEOUT_MS,
   MAX_INIT_TIMEOUT_MS,
 );
+const AUTO_COMPACT_WINDOW = resolveAutoCompactWindow();
 /** Upper bound on a clean shutdown before the process is torn down anyway. */
 const SHUTDOWN_GRACE_MS = 2_000;
 /**
@@ -58,6 +60,7 @@ const engine = createEngine({
   }),
   timeoutMs: TIMEOUT_MS,
   cancelWatchdogMs: CANCEL_WATCHDOG_MS,
+  autoCompactWindow: AUTO_COMPACT_WINDOW,
 });
 
 const INSTRUCTIONS = [
@@ -68,6 +71,8 @@ const INSTRUCTIONS = [
   "`claude` and `claude-reply` return the stable sessionId after initialization; poll with `claude-result` and stop with `claude-cancel`.",
   `Initialization waits at most ${INIT_TIMEOUT_MS}ms; answers continue asynchronously after that handshake.`,
   "Session IDs work across `claude-reply`, `claude-result`, and `claude-cancel`.",
+  "Start a fresh `claude` session at task or topic boundaries; use `claude-reply` only for tightly related follow-ups that benefit from exact conversational continuity.",
+  "Result snapshots report context and observed compaction state. If a completed session has more than 150000 context tokens and `cacheLikelyCold: true`, prefer a fresh session with a short handoff unless the next turn needs the prior evidence in detail.",
   "Pass `cwd` (repo root) so Claude reads the right project — the CLI loads that repo's own configuration and memory from there.",
 ].join(" ");
 
@@ -108,7 +113,8 @@ const TOOLS = [
   },
   {
     name: "claude-result",
-    description: "Get the latest turn status or result for a Claude session.",
+    description:
+      "Get the latest turn status, result, context usage, compaction state, and process-local cache-cold heuristic for a Claude session.",
     inputSchema: {
       type: "object",
       properties: {

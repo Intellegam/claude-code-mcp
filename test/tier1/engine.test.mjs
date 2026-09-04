@@ -43,6 +43,9 @@ function fakeRunners(script) {
       init: (sessionId) => runner.events.onInit(sessionId),
       model: (model) => runner.events.onModel(model),
       text: (text) => runner.events.onText(text),
+      usage: (usage) => runner.events.onUsage(usage),
+      compact: (boundary) => runner.events.onCompact(boundary),
+      contextUsage: (usage) => runner.events.onContextUsage(usage),
       result: (patch = {}) =>
         runner.events.onResult({
           subtype: "success",
@@ -488,5 +491,92 @@ describe("model reporting", () => {
     const snap = await settled(engine, "s-1");
     assert.equal(snap.status, "failed");
     assert.equal(snap.model, "claude-test-model");
+  });
+});
+
+describe("context and compaction telemetry", () => {
+  test("snapshots expose authoritative context and effective compaction state", async () => {
+    const createRunner = fakeRunners((runner) => runner.init("s-1"));
+    const engine = createEngine({
+      createRunner,
+      timeoutMs: 60_000,
+      autoCompactWindow: 320_000,
+    });
+
+    const turn = await submitStart(engine, { prompt: "hi", cwd: "/repo" });
+    const runner = createRunner.created[0];
+    runner.model("serving-model");
+    runner.usage({ contextTokens: 271_005 });
+    runner.compact({
+      trigger: "auto",
+      preTokens: 287_123,
+      postTokens: 42_000,
+      durationMs: 1_234,
+    });
+    runner.contextUsage({
+      contextTokens: 49_000,
+      contextWindow: 320_000,
+      modelContextWindow: 1_000_000,
+      contextPercent: 15.3,
+      autoCompactThreshold: 287_000,
+      isAutoCompactEnabled: true,
+    });
+    runner.result({ text: "ok", modelContextWindow: 1_000_000 });
+
+    const snap = await settled(engine, turn.sessionId);
+    assert.equal(snap.contextTokens, 49_000);
+    assert.equal(snap.peakContextTokens, 287_123);
+    assert.equal(snap.contextWindow, 320_000);
+    assert.equal(snap.modelContextWindow, 1_000_000);
+    assert.equal(snap.autoCompactWindow, 320_000);
+    assert.equal(snap.autoCompactThreshold, 287_000);
+    assert.equal(snap.isAutoCompactEnabled, true);
+    assert.equal(snap.contextPercent, 15.3);
+    assert.equal(snap.compactionCount, 1);
+    assert.equal(snap.turnCompactionCount, 1);
+    assert.deepEqual(snap.lastCompaction, {
+      trigger: "auto",
+      preTokens: 287_123,
+      postTokens: 42_000,
+      durationMs: 1_234,
+    });
+    assert.equal(snap.cacheLikelyCold, false);
+    assert.equal(snap.idleSeconds, 0);
+    assert.equal(snap.lastRequestAt, new Date(turn.createdAt).toISOString());
+  });
+
+  test("session compaction totals survive when the previous turn is discarded", async () => {
+    const createRunner = fakeRunners((runner) => runner.init("s-1"));
+    const engine = createEngine({ createRunner, timeoutMs: 60_000 });
+
+    await submitStart(engine, { prompt: "hi", cwd: "/repo" });
+    createRunner.created[0].compact({
+      trigger: "auto",
+      preTokens: 200_000,
+      postTokens: 40_000,
+    });
+    createRunner.created[0].result({ text: "ok" });
+    await settled(engine, "s-1");
+
+    await submitReply(engine, { sessionId: "s-1", prompt: "again" });
+    createRunner.created[1].usage({ contextTokens: 50_000 });
+    createRunner.created[1].result({ text: "continued" });
+    const snap = await settled(engine, "s-1");
+    assert.equal(engine._turns.size, 1);
+    assert.equal(snap.compactionCount, 1);
+    assert.equal(snap.turnCompactionCount, 0);
+    assert.equal(snap.lastCompaction.preTokens, 200_000);
+  });
+
+  test("the cache-cold field is a dynamic terminal-session heuristic", async () => {
+    const { engine, turn, runners } = await startedEngine();
+    runners[0].result({ text: "ok" });
+    await settled(engine, turn.sessionId);
+
+    const retained = engine._turns.get(turn.id);
+    retained.finishedAt = Date.now() - 60 * 60 * 1000 - 1_500;
+    const snap = engine.result({ sessionId: turn.sessionId });
+    assert.equal(snap.cacheLikelyCold, true);
+    assert.ok(snap.idleSeconds >= 3_601);
   });
 });

@@ -13,8 +13,8 @@ Everything marked *verified* was established empirically against
 `@anthropic-ai/claude-agent-sdk@0.3.258` and its bundled CLI 2.1.x.
 
 The turn/session engine is ported from codex-mcp: turn records, session records,
-the one-active-turn guard, the cancel watchdog, terminal states and snapshot
-shapes are all the same, apart from the `model` field this server adds. What is
+the one-active-turn guard, the cancel watchdog and terminal states follow the
+same design. This server adds model/context/compaction fields to snapshots. What is
 dropped is codex-mcp's app-server connection layer: there is no persistent
 Claude daemon. Each turn spawns its own CLI child through the SDK, and
 continuity comes from `resume`.
@@ -47,9 +47,14 @@ only once the turn has settled.
   nothing (a window of roughly 350ms for a fresh session, longer whenever the
   CLI start is slow). A cancel arriving in that window is buffered as
   `cancelPending` and sent exactly once when init is observed.
-- **Result.** On a `result` message the runner settles the turn *first*, then
-  releases the hold-open promise — releasing closes stdin and can make the
-  iterator throw.
+- **Context telemetry.** Real assistant requests supply the current input
+  context; zero-token synthetic rows are ignored. `system/compact_boundary`
+  supplies observed pre/post token counts. The supported context-usage control
+  response supplies the effective window, threshold and enabled state.
+- **Result.** A successful result first gets one best-effort, one-second
+  `getContextUsage({detail: "summary"})` control read while stdin is still open.
+  Error or interrupted results skip it. The runner then publishes the result,
+  then releases the hold-open promise; engine cleanup closes the query.
 - *Verified:* a successful interrupt produces `subtype:
   "error_during_execution"` with `terminal_reason: "aborted_streaming"`, and the
   message iterator then **throws** (`Claude Code returned an error result:
@@ -70,6 +75,21 @@ only once the turn has settled.
   cwd before spawning the CLI. After a server restart, the SDK adapter validates
   the requested cwd against persisted session metadata before it starts the
   resumed query.
+
+## Context guardrail and session boundaries
+
+Every MCP-started session receives `autoCompactWindow: 320000` through the
+flag-settings layer unless `CLAUDE_CODE_MCP_AUTO_COMPACT_WINDOW=off` tells the
+wrapper not to override the operator/CLI policy. An integer from 100k to 1M
+selects a different MCP-only window; invalid values fail server startup. The
+CLI may clamp it to the serving model and owns the actual threshold, so the
+snapshot reports its control-response values rather than deriving them.
+
+This is a quality guardrail, not a savings claim. Semantic boundaries remain a
+caller decision: start a fresh session for a new task/topic and resume only a
+tightly related follow-up. `cacheLikelyCold` means only that a terminal turn has
+been idle for an hour in this server process; it is a heuristic for that caller
+decision and never triggers compaction or session creation.
 
 ## Terminal-state precedence
 
@@ -242,7 +262,8 @@ best-effort, and the docs say so.
 
 - Sessions are in-memory: after a restart, `claude-reply` needs an explicit `cwd`
   and falls back to read-only. Persisted SDK metadata is used only to verify the
-  cwd; the wrapper's permission level and latest-turn state are not restored.
+  cwd; the wrapper's permission level, latest-turn state, compaction totals and
+  idle/cold metadata are not restored.
 - A submission waits up to `CLAUDE_INIT_TIMEOUT_MS` (30s by default and as a
   hard maximum) for `system/init` because the native stable session ID does not
   exist before then. The setting may shorten but cannot lengthen that ceiling.
