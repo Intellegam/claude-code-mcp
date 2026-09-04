@@ -260,9 +260,12 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export async function pollUntil(server, sessionId, predicate, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const snap = snapshot(await server.call("claude-result", { sessionId }));
+    const remainingMs = deadline - Date.now();
+    const snap = snapshot(
+      await server.call("claude-result", { sessionId }, remainingMs),
+    );
     if (predicate(snap)) return snap;
-    await sleep(25);
+    await sleep(Math.min(25, Math.max(0, deadline - Date.now())));
   }
   throw new Error(
     `session ${sessionId} never matched predicate within ${timeoutMs}ms`,
@@ -271,19 +274,21 @@ export async function pollUntil(server, sessionId, predicate, timeoutMs = 15_000
 
 /** Submit a turn and poll its non-blocking result endpoint to completion. */
 export async function runSession(server, name, args, timeoutMs = 120000) {
-  const submitted = snapshot(await server.call(name, args, timeoutMs));
-  if (submitted.done) return requireSuccess(submitted);
   const deadline = Date.now() + timeoutMs;
+  const submitted = snapshot(
+    await server.call(name, args, Math.max(1, deadline - Date.now())),
+  );
+  if (submitted.done) return requireSuccess(submitted);
   while (Date.now() < deadline) {
     const current = snapshot(
       await server.call(
         "claude-result",
         { sessionId: submitted.sessionId },
-        timeoutMs,
+        Math.max(1, deadline - Date.now()),
       ),
     );
     if (current.done) return requireSuccess(current);
-    await sleep(25);
+    await sleep(Math.min(25, Math.max(0, deadline - Date.now())));
   }
   throw new Error(
     `session ${submitted.sessionId} did not finish within ${timeoutMs}ms`,

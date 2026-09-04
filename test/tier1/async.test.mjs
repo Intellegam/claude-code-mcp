@@ -23,7 +23,7 @@ describe("asynchronous session API", () => {
     const started = Date.now();
     const submitted = snapshot(
       await server.call("claude", {
-        prompt: "#init=250 #work=400 first turn",
+        prompt: "#init=250 #work=2000 first turn",
       }),
     );
 

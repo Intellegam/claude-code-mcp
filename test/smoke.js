@@ -28,6 +28,7 @@ const REPO_ROOT = path.resolve(
   "..",
 );
 const TIMEOUT_MS = 5 * 60 * 1000;
+const SESSION_TIMEOUT_MS = 10 * 60 * 1000;
 
 function client() {
   const proc = spawn(process.execPath, [path.join(REPO_ROOT, "server.js")], {
@@ -54,17 +55,24 @@ function client() {
   });
 
   let nextId = 1;
-  const request = (method, params) =>
+  const request = (method, params, timeoutMs = TIMEOUT_MS) =>
     new Promise((resolve, reject) => {
       const id = nextId++;
-      pending.set(id, resolve);
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error(`${method} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      pending.set(id, (message) => {
+        clearTimeout(timer);
+        resolve(message);
+      });
       proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
-      setTimeout(() => reject(new Error(`${method} timed out`)), TIMEOUT_MS);
     });
 
   return {
     request,
-    call: (name, args) => request("tools/call", { name, arguments: args }),
+    call: (name, args, timeoutMs) =>
+      request("tools/call", { name, arguments: args }, timeoutMs),
     close: () => {
       proc.stdin.end();
       proc.kill("SIGTERM");
@@ -92,12 +100,28 @@ const assert = (condition, message) => {
 const snapshot = (response) => JSON.parse(response.result.content[0].text);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function runSession(name, args) {
-  let current = snapshot(await mcp.call(name, args));
-  while (!current.done) {
-    await sleep(1000);
+async function runSession(name, args, timeoutMs = SESSION_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  let current = snapshot(
+    await mcp.call(
+      name,
+      args,
+      Math.min(TIMEOUT_MS, Math.max(1, deadline - Date.now())),
+    ),
+  );
+  while (!current.done && Date.now() < deadline) {
+    await sleep(Math.min(1000, Math.max(0, deadline - Date.now())));
     current = snapshot(
-      await mcp.call("claude-result", { sessionId: current.sessionId }),
+      await mcp.call(
+        "claude-result",
+        { sessionId: current.sessionId },
+        Math.min(TIMEOUT_MS, Math.max(1, deadline - Date.now())),
+      ),
+    );
+  }
+  if (!current.done) {
+    throw new Error(
+      `session ${current.sessionId} did not finish within ${timeoutMs}ms`,
     );
   }
   return current;
@@ -260,16 +284,26 @@ await scenario("submit, then cancel", async () => {
   assert(!cancelled.done, "the turn finished before the cancel was sent");
 
   const started = Date.now();
+  const deadline = started + 60_000;
   let final = snapshot(
-    await mcp.call("claude-result", { sessionId: submitted.sessionId }),
+    await mcp.call(
+      "claude-result",
+      { sessionId: submitted.sessionId },
+      Math.max(1, deadline - Date.now()),
+    ),
   );
-  while (!final.done) {
-    await sleep(1000);
+  while (!final.done && Date.now() < deadline) {
+    await sleep(Math.min(1000, Math.max(0, deadline - Date.now())));
     final = snapshot(
-      await mcp.call("claude-result", { sessionId: submitted.sessionId }),
+      await mcp.call(
+        "claude-result",
+        { sessionId: submitted.sessionId },
+        Math.max(1, deadline - Date.now()),
+      ),
     );
   }
   const elapsed = Date.now() - started;
+  assert(final.done, "the cancelled session did not settle within 60 seconds");
   assert(
     final.status === "cancelled",
     `expected cancelled, got ${final.status}`,
