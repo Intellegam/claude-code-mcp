@@ -124,6 +124,11 @@ async function runSession(name, args, timeoutMs = SESSION_TIMEOUT_MS) {
       `session ${current.sessionId} did not finish within ${timeoutMs}ms`,
     );
   }
+  if (current.status !== "succeeded") {
+    throw new Error(
+      `session ${current.sessionId} ended as ${current.status}: ${current.error ?? "no error reported"}`,
+    );
+  }
   return current;
 }
 
