@@ -5,11 +5,8 @@
  *
  * Usage:
  *   node test/send.js claude "What does this repo do?"
- *   node test/send.js claude --async "What does this repo do?"
  *   node test/send.js claude --writable "Fix the typo in README.md"
  *   node test/send.js claude-reply <sessionId> "Follow-up question"
- *   node test/send.js claude-result <sessionId> [--wait]
- *   node test/send.js claude-cancel <sessionId>
  */
 
 import { spawn } from "node:child_process";
@@ -33,10 +30,8 @@ if (!tool || flags.has("--help")) {
   console.log(
     [
       "Usage:",
-      '  node test/send.js claude "prompt" [--async] [--writable]',
-      '  node test/send.js claude-reply <sessionId> "prompt" [--async]',
-      "  node test/send.js claude-result <sessionId> [--wait]",
-      "  node test/send.js claude-cancel <sessionId>",
+      '  node test/send.js claude "prompt" [--writable]',
+      '  node test/send.js claude-reply <sessionId> "prompt"',
     ].join("\n"),
   );
   process.exit(0);
@@ -46,7 +41,6 @@ function buildArgs() {
   switch (tool) {
     case "claude": {
       const args = { prompt: rest.join(" ") || "Hello", cwd: CWD };
-      if (flags.has("--async")) args.async = true;
       if (flags.has("--writable")) args.writable = true;
       return args;
     }
@@ -56,16 +50,8 @@ function buildArgs() {
         prompt: rest.slice(1).join(" ") || "Continue",
         cwd: CWD,
       };
-      if (flags.has("--async")) args.async = true;
       return args;
     }
-    case "claude-result": {
-      const args = { sessionId: rest[0] };
-      if (flags.has("--wait")) args.wait = true;
-      return args;
-    }
-    case "claude-cancel":
-      return { sessionId: rest[0] };
     default:
       console.error(`Unknown tool: ${tool}`);
       process.exit(1);
@@ -110,6 +96,14 @@ function send(message) {
   proc.stdin.write(`${JSON.stringify(message)}\n`);
 }
 
+function readSnapshot(response) {
+  if (response.error) throw new Error(`Protocol error: ${response.error.message}`);
+  if (response.result.isError) {
+    throw new Error(response.result.content.map((block) => block.text).join("\n"));
+  }
+  return JSON.parse(response.result.content[0].text);
+}
+
 function done() {
   proc.stdin.end();
   proc.kill("SIGTERM");
@@ -130,48 +124,34 @@ send({
   method: "tools/call",
   params: { name: tool, arguments: args },
 });
-const response = await wait();
-
-if (response.error) {
-  console.error(`Protocol error: ${response.error.message}`);
-  done();
-  process.exit(1);
-}
-
-for (const block of response.result.content) console.log(block.text);
-
-// A failed tool call is a result carrying `isError`, not a JSON-RPC error.
-if (response.result.isError) {
-  done();
-  process.exit(1);
-}
-
-if (args.async) {
-  const submitted = JSON.parse(response.result.content[0].text);
-  if (!submitted.done) {
-    console.error(`\n→ Waiting for result (sessionId: ${submitted.sessionId})...\n`);
+let current;
+try {
+  current = readSnapshot(await wait());
+  console.log(JSON.stringify(current, null, 2));
+  if (!current.done) {
+    console.error(`\n→ Polling session ${current.sessionId}...\n`);
+  }
+  while (!current.done) {
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
     send({
       jsonrpc: "2.0",
       id: nextId++,
       method: "tools/call",
       params: {
         name: "claude-result",
-        arguments: { sessionId: submitted.sessionId, wait: true },
+        arguments: { sessionId: current.sessionId },
       },
     });
-    const polled = await wait();
-    if (polled.error || polled.result.isError) {
-      console.error(
-        `Error: ${polled.error?.message ?? polled.result.content[0].text}`,
-      );
-      done();
-      process.exit(1);
-    }
-    const final = JSON.parse(polled.result.content[0].text);
-    console.error(`  status: ${final.status}, elapsed: ${final.elapsed}`);
-    console.log(final.output);
-    if (final.sessionId) console.log(`\n[SESSION_ID: ${final.sessionId}]`);
+    current = readSnapshot(await wait());
   }
+  console.error(`  status: ${current.status}, elapsed: ${current.elapsed}`);
+  console.log(current.output);
+  console.log(`\n[SESSION_ID: ${current.sessionId}]`);
+} catch (error) {
+  console.error(error.message);
+  done();
+  process.exit(1);
 }
 
 done();
+if (current.status !== "succeeded") process.exitCode = 1;

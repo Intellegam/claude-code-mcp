@@ -3,9 +3,9 @@
 An MCP server that lets another AI agent — typically OpenAI Codex — consult
 Claude Code for a second opinion, plan validation, or code review.
 
-It is the mirror image of [`codex-mcp`](https://github.com/Intellegam/codex-mcp),
-which points the other way. Same contract, same async model, same session
-semantics.
+It is the directional counterpart of
+[`codex-mcp`](https://github.com/Intellegam/codex-mcp), which points the other
+way; their public execution contracts are independent.
 
 ## How it works
 
@@ -33,7 +33,7 @@ install.
 ```toml
 [mcp_servers.claude-agent]
 command = "npx"
-args = ["-y", "github:Intellegam/claude-code-mcp#v0.1.4"]
+args = ["-y", "github:Intellegam/claude-code-mcp#v0.2.0"]
 ```
 
 Or from a local checkout:
@@ -56,26 +56,24 @@ server name the client is configured with.
 ### `claude` — start a new session
 
 ```
-// Synchronous (blocks until Claude answers)
+// Returns once Claude initializes; the answer continues in the background
 claude({ prompt: "Does this plan handle the retry case?", cwd: "/path/to/repo" })
-
-// Asynchronous (returns a sessionId immediately)
-claude({ prompt: "Review the auth module", cwd: "/path/to/repo", async: true })
+// → { sessionId: "e0dbaa09-…", status: "running", done: false }
 
 // Allow edits and commands (scope it in the prompt)
 claude({ prompt: "Fix the failing test in tests/test_auth.py", cwd: "/repo", writable: true })
 ```
 
-Parameters: `prompt` (required), `cwd`, `writable` (default false), `async`
-(default false).
+Parameters: `prompt` (required), `cwd`, `writable` (default false).
 
 Pass `cwd` — it is the repo Claude reads, and the CLI loads that repo's own
 configuration and `CLAUDE.md` from there.
 
-A successful synchronous `claude` or `claude-reply` call appends a trailer
-block: `[SESSION_ID: …]` and `[MODEL: …]`, the model that served the turn —
-resolved at initialization, updated if the CLI falls back mid-turn. The model
-is recorded per turn, so a resumed session may report a different one.
+The submission waits for Claude's initialization handshake (normally about
+0.3–3 seconds, with a 30-second safety bound). This makes the stable native
+`sessionId` available and surfaces startup failures before the tool call
+returns; it does not wait for Claude's answer. A startup that misses the bound
+is stopped and returns an actionable tool error.
 
 ### `claude-reply` — continue a session
 
@@ -83,8 +81,7 @@ is recorded per turn, so a resumed session may report a different one.
 claude-reply({ sessionId: "e0dbaa09-…", prompt: "What about the timeout path?", cwd: "/path/to/repo" })
 ```
 
-Parameters: `sessionId` (required), `prompt` (required), `cwd`, `async` (default
-false).
+Parameters: `sessionId` (required), `prompt` (required), `cwd`.
 
 Resume is keyed by session id **and** cwd, so pass the same `cwd` the session was
 created with. While the server retains the session record, the engine rejects a
@@ -99,12 +96,11 @@ a new `claude` session if you need write access again.
 ### `claude-result` — poll for the latest turn
 
 ```
-claude-result({ sessionId: "e0dbaa09-…" })              // immediate check
-claude-result({ sessionId: "e0dbaa09-…", wait: true })  // block until done
+claude-result({ sessionId: "e0dbaa09-…" })
 ```
 
 Returns the latest turn's snapshot: `status`, `done`, `output`, `model`,
-`error`, `elapsed`, … (`model` is `null` until the turn has initialized).
+`error`, `elapsed`, …. It always returns the current state immediately.
 
 ### `claude-cancel` — cancel the active turn
 
@@ -113,7 +109,9 @@ claude-cancel({ sessionId: "e0dbaa09-…" })
 ```
 
 Sends an interrupt if a turn is in flight; otherwise returns the current state
-unchanged. Safe to call at any time, including before the turn is fully up.
+unchanged. For a reply, the existing session ID can cancel even before that
+turn initializes. A fresh `claude` request has no session ID before init, so its
+MCP request itself must be cancelled in that window.
 
 ### Failures
 
@@ -122,16 +120,16 @@ the message as text — the calling model reads the failure instead of losing it
 JSON-RPC error codes are reserved for requests the server could not act on at
 all: `-32602` for an unknown tool, `-32601`/`-32600`/`-32700` for bad envelopes.
 
-## Async mode
+## Session lifecycle
 
-Use `async: true` when you have other work to do while Claude thinks. If you
-would just poll in a loop, use sync (the default) instead.
+All Claude turns are asynchronous after initialization. Use the same stable
+native `sessionId` to inspect, continue, or cancel the conversation.
 
 ```
-claude({ prompt: "Complex analysis task", cwd: "/repo", async: true })
+claude({ prompt: "Complex analysis task", cwd: "/repo" })
 // → { sessionId: "e0dbaa09-…", status: "running", done: false }
 
-claude-result({ sessionId: "e0dbaa09-…", wait: true })
+claude-result({ sessionId: "e0dbaa09-…" })
 // → { sessionId: "e0dbaa09-…", status: "succeeded", output: "…", done: true }
 
 claude-reply({ sessionId: "e0dbaa09-…", prompt: "follow-up", cwd: "/repo" })
@@ -157,8 +155,8 @@ turn — in exchange the consultation has the context and tooling you do.
 That includes the **model**: consultations use your `model` setting
 (`~/.claude/settings.json` or project settings) or an inherited
 `ANTHROPIC_MODEL` env var, else the CLI default — whatever an interactive
-client did or didn't persist there. The `[MODEL: …]` trailer tells you what a
-turn actually ran.
+client did or didn't persist there. The result snapshot's `model` field tells
+you what a turn actually ran.
 
 Read-only is the default: no `Write`, `Edit`, `NotebookEdit`, `Bash`, `Monitor`,
 `REPL` or `TaskCreate`/`TaskUpdate`/`TaskStop`, and inline `!` shell commands in
@@ -209,9 +207,10 @@ through a settings file keeps working.
 
 ## Configuration
 
-| Environment variable        | Default            | Description                                        |
-| --------------------------- | ------------------ | -------------------------------------------------- |
-| `CLAUDE_TIMEOUT_MS`         | `1800000` (30 min) | Maximum time for one turn                          |
+| Environment variable        | Default            | Description                                         |
+| --------------------------- | ------------------ | --------------------------------------------------- |
+| `CLAUDE_INIT_TIMEOUT_MS`    | `30000` (30s)      | Initialization wait; may be lowered, capped at 30s   |
+| `CLAUDE_TIMEOUT_MS`         | `1800000` (30 min) | Maximum time for one turn                           |
 | `CLAUDE_CANCEL_WATCHDOG_MS` | `30000` (30s)      | How long to wait after an interrupt before forcing  |
 
 ## Development
@@ -223,7 +222,6 @@ npm run test:smoke    # tier 3: real model, needs CLAUDE_CODE_MCP_SMOKE=1
 npm run check         # node --check over the sources
 
 node test/send.js claude "prompt"                  # try it by hand
-node test/send.js claude --async "prompt"
 node test/send.js claude-reply <sessionId> "prompt"
 ```
 

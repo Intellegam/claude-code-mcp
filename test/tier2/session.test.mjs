@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test, { after, before, describe } from "node:test";
-import { sessionIdFrom, toolError } from "../helpers/harness.mjs";
+import { runSession, toolError } from "../helpers/harness.mjs";
 import { startTier2 } from "../helpers/fixtures.mjs";
 
 describe("resume", () => {
@@ -29,26 +29,26 @@ describe("resume", () => {
   after(async () => ctx?.stop());
 
   test("a first turn returns a session id", async () => {
-    const response = await ctx.server.call(
+    const result = await runSession(
+      ctx.server,
       "claude",
       { prompt: "Remember: the magic word is kumquat.", cwd: repoLink },
       120000,
     );
-    assert.equal(response.error, undefined, JSON.stringify(response.error));
-    sessionId = sessionIdFrom(response);
+    sessionId = result.sessionId;
     assert.match(sessionId, /^[0-9a-f-]{36}$/);
   });
 
   test("a reply keeps the id and replays the conversation", async () => {
-    const response = await ctx.server.call(
+    const result = await runSession(
+      ctx.server,
       "claude-reply",
       { sessionId, prompt: "What is the magic word?", cwd: repoLink },
       120000,
     );
-    assert.equal(response.error, undefined, JSON.stringify(response.error));
-    // Not a tautology: the engine adopts whatever id `system/init` reports, so
-    // this compares the id the CLI answered with against the one we resumed.
-    assert.equal(sessionIdFrom(response), sessionId, "session id is preserved");
+    // Not a tautology: the engine rejects a different id, so this proves the
+    // real CLI preserves the native session id on resume.
+    assert.equal(result.sessionId, sessionId, "session id is preserved");
 
     const replayed = JSON.stringify(ctx.mock.mainCalls()[1].messages);
     assert.match(replayed, /kumquat/, "the earlier turn was replayed");
@@ -65,18 +65,17 @@ describe("resume", () => {
     assert.match(failure, /same cwd the session was created in/);
     assert.match(failure, new RegExp(ctx.sandbox.repo));
     assert.match(failure, new RegExp(ctx.sandbox.root));
-    assert.match(failure, /sessionId: /, "the handle is kept");
   });
 
   test("resume works across a server restart", async () => {
     await ctx.restart();
-    const response = await ctx.server.call(
+    const result = await runSession(
+      ctx.server,
       "claude-reply",
       { sessionId, prompt: "Once more: the magic word?", cwd: repoLink },
       120000,
     );
-    assert.equal(response.error, undefined, JSON.stringify(response.error));
-    assert.equal(sessionIdFrom(response), sessionId);
+    assert.equal(result.sessionId, sessionId);
   });
 
   test("the original cwd is still enforced after a server restart", async () => {

@@ -9,6 +9,7 @@ import test, { after, before, describe } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { runSession } from "../helpers/harness.mjs";
 import { toolResults, toolUses } from "../helpers/mock-api.mjs";
 import {
   ASKED_MARKER,
@@ -67,12 +68,12 @@ describe("permission levels", () => {
   after(async () => ctx?.stop());
 
   test("read-only (the default) refuses the Write and nothing lands on disk", async () => {
-    const response = await ctx.server.call(
+    await runSession(
+      ctx.server,
       "claude",
       { prompt: "Create written.txt", cwd: ctx.sandbox.repo },
       120000,
     );
-    assert.equal(response.error, undefined, JSON.stringify(response.error));
 
     const results = toolResults(ctx.mock.mainCalls()[1]);
     assert.equal(results.length, 1, JSON.stringify(results));
@@ -82,13 +83,13 @@ describe("permission levels", () => {
 
   test("writable mode writes without any permission prompt", async () => {
     const before = ctx.mock.mainCalls().length;
-    const response = await ctx.server.call(
+    const result = await runSession(
+      ctx.server,
       "claude",
       { prompt: "Create written.txt", cwd: ctx.sandbox.repo, writable: true },
       120000,
     );
-    assert.equal(response.error, undefined, JSON.stringify(response.error));
-    assert.match(response.result.content[0].text, /Wrote the file/);
+    assert.match(result.output, /Wrote the file/);
 
     const results = toolResults(ctx.mock.mainCalls()[before + 1]);
     assert.equal(results[0].isError, false, JSON.stringify(results));
@@ -103,12 +104,12 @@ describe("permission levels", () => {
    */
   const readTurn = async (prompt, expectedPath) => {
     const before = ctx.mock.mainCalls().length;
-    const response = await ctx.server.call(
+    await runSession(
+      ctx.server,
       "claude",
       { prompt, cwd: ctx.sandbox.repo },
       120000,
     );
-    assert.equal(response.error, undefined, JSON.stringify(response.error));
 
     const followUp = ctx.mock.mainCalls()[before + 1];
     const use = toolUses(followUp).at(-1);
@@ -216,12 +217,12 @@ describe("a bare-name ask rule", () => {
     // The rule forces a prompt for every Read, even in-tree. *Verified:* with
     // no tool-own decisionReason in play, the request arrives without
     // `matchedAskRule` and lands in the generic deny.
-    const response = await ctx.server.call(
+    await runSession(
+      ctx.server,
       "claude",
       { prompt: "Read sample.txt", cwd: ctx.sandbox.repo },
       120000,
     );
-    assert.equal(response.error, undefined, JSON.stringify(response.error));
 
     const results = toolResults(ctx.mock.mainCalls()[1]);
     assert.equal(results[0].isError, true, JSON.stringify(results));
@@ -237,12 +238,12 @@ describe("a bare-name ask rule", () => {
     // the branch must outrank the gate approval — without it, this read
     // would be auto-approved against the operator's rule.
     const before = ctx.mock.mainCalls().length;
-    const response = await ctx.server.call(
+    await runSession(
+      ctx.server,
       "claude",
       { prompt: "Read the outside file", cwd: ctx.sandbox.repo },
       120000,
     );
-    assert.equal(response.error, undefined, JSON.stringify(response.error));
 
     const results = toolResults(ctx.mock.mainCalls()[before + 1]);
     assert.equal(results[0].isError, true, JSON.stringify(results));

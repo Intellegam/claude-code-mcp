@@ -8,9 +8,10 @@
  * which points the other way.
  *
  * Each turn spawns an isolated Claude Code via the Claude Agent SDK; sessions
- * are tracked in memory and continued through the SDK's `resume`. Tool calls
- * are synchronous by default; `async: true` returns a sessionId immediately and
- * the turn is polled with `claude-result` and stopped with `claude-cancel`.
+ * are tracked in memory and continued through the SDK's `resume`. Submissions
+ * return the stable Claude sessionId after initialization; the turn then runs
+ * asynchronously and is polled with `claude-result` or stopped with
+ * `claude-cancel`.
  */
 
 import {
@@ -20,12 +21,18 @@ import {
 } from "./lib/engine.js";
 import { createRunnerFactory, loadSdk } from "./lib/claude-runner.js";
 
-const VERSION = "0.1.4";
+const VERSION = "0.2.0";
 const TIMEOUT_MS =
   parseInt(process.env.CLAUDE_TIMEOUT_MS, 10) || DEFAULT_TIMEOUT_MS;
 const CANCEL_WATCHDOG_MS =
   parseInt(process.env.CLAUDE_CANCEL_WATCHDOG_MS, 10) ||
   DEFAULT_CANCEL_WATCHDOG_MS;
+const MAX_INIT_TIMEOUT_MS = 30_000;
+const INIT_TIMEOUT_MS = positiveInteger(
+  process.env.CLAUDE_INIT_TIMEOUT_MS,
+  MAX_INIT_TIMEOUT_MS,
+  MAX_INIT_TIMEOUT_MS,
+);
 /** Upper bound on a clean shutdown before the process is torn down anyway. */
 const SHUTDOWN_GRACE_MS = 2_000;
 /**
@@ -34,6 +41,14 @@ const SHUTDOWN_GRACE_MS = 2_000;
  * message per line, and no legitimate one comes close.
  */
 const MAX_LINE_CHARS = 10 * 1024 * 1024;
+
+function positiveInteger(value, fallback, maximum) {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return fallback;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0
+    ? Math.min(parsed, maximum)
+    : fallback;
+}
 
 const sdk = await loadSdk();
 const engine = createEngine({
@@ -50,7 +65,8 @@ const INSTRUCTIONS = [
   "Form your own analysis first, then consult it — and treat disagreement as signal, not noise.",
   "`claude` defaults to read-only — no writes, no shell, no subagents through Claude Code's built-in tools; it runs as the operator's own Claude Code, so non-bridge MCP servers stay available and those may have side effects.",
   "`writable: true` allows file writes and commands and must be explicitly scoped in the prompt.",
-  "`async: true` on `claude` and `claude-reply` returns a sessionId immediately instead of blocking; poll with `claude-result` (use `wait: true` to block until done) and stop with `claude-cancel`.",
+  "`claude` and `claude-reply` return the stable sessionId after initialization; poll with `claude-result` and stop with `claude-cancel`.",
+  `Initialization waits at most ${INIT_TIMEOUT_MS}ms; answers continue asynchronously after that handshake.`,
   "Session IDs work across `claude-reply`, `claude-result`, and `claude-cancel`.",
   "Pass `cwd` (repo root) so Claude reads the right project — the CLI loads that repo's own configuration and memory from there.",
 ].join(" ");
@@ -69,7 +85,6 @@ const TOOLS = [
           description:
             "Allow file writes and commands. Default false; in the prompt, be explicit about what Claude should and should not do.",
         },
-        async: { type: "boolean", description: "Run asynchronously." },
       },
       required: ["prompt"],
     },
@@ -87,7 +102,6 @@ const TOOLS = [
           description:
             "Working directory. Required when resuming across MCP restarts — must match the cwd used when the session was created.",
         },
-        async: { type: "boolean", description: "Run asynchronously." },
       },
       required: ["sessionId", "prompt"],
     },
@@ -99,11 +113,6 @@ const TOOLS = [
       type: "object",
       properties: {
         sessionId: { type: "string", description: "Session ID" },
-        wait: {
-          type: "boolean",
-          description:
-            "Block until the latest turn completes. Default false (returns current state immediately).",
-        },
       },
       required: ["sessionId"],
     },
@@ -132,18 +141,15 @@ const inFlight = new Set();
 /**
  * Live `tools/call` requests, by JSON-RPC id, so `notifications/cancelled` can
  * reach them: `cancelled` suppresses the response (per MCP the server should
- * not answer a cancelled request), and `turn` — attached for every submission,
- * synchronous or async — is the turn to stop.
+ * not answer a cancelled request), and `turn` is the submission to stop while
+ * the server waits for its initialization handshake.
  *
  * Stopping it is correct for exactly as long as the entry exists, which is
  * until the response is sent: a cancel landing in that window leaves the client
  * without the sessionId, so a turn left running could never be reached again.
  * Afterwards the entry is gone (the `finally` in `handleToolCall`), a late
- * cancel is a no-op, and `claude-cancel` is the only way to stop an async turn.
- *
- * `cancelSignal` is the other half: a handler waiting on a turn it may not stop
- * (`claude-result wait: true`) has to be released some other way, or it holds
- * the request until that turn finishes.
+ * cancel is a no-op, and `claude-cancel` is the way to stop an initialized
+ * turn.
  */
 const liveCalls = new Map();
 
@@ -293,13 +299,27 @@ function handleNotification(method, params) {
   const call = liveCalls.get(params?.requestId);
   if (!call) return;
   call.cancelled = true;
-  call.signalCancel();
   cancelTurn(call.turn);
 }
 
 function cancelTurn(turn) {
   if (!turn) return;
   try {
+    // A fresh session cancelled before init has no public handle. Settle and
+    // close it immediately instead of letting init create an unreachable
+    // session while the response is suppressed. Replies already have a public
+    // sessionId, so their cancellation remains observable through result.
+    if (
+      turn.toolName === "claude" &&
+      !turn.sawInit &&
+      engine.failBeforeInitialization(
+        turn,
+        "Claude startup was cancelled before initialization",
+        "cancel",
+      )
+    ) {
+      return;
+    }
     // By reference, not by session: a turn that has not reached `system/init`
     // has no sessionId to look up yet.
     engine.cancelTurn(turn);
@@ -308,23 +328,14 @@ function cancelTurn(turn) {
   }
 }
 
-/** What `cancelSignal` resolves to, so it is distinguishable from a result. */
-const CANCELLED = Symbol("cancelled");
-
 async function handleToolCall(id, params) {
   const name = params?.name;
   const args = params?.arguments ?? {};
   const call = { cancelled: false, turn: null };
-  // Resolved by `notifications/cancelled`, so a handler parked on a turn it is
-  // no longer allowed to answer can stop waiting.
-  call.cancelSignal = new Promise((resolve) => {
-    call.signalCancel = () => resolve(CANCELLED);
-  });
   liveCalls.set(id, call);
 
   try {
-    // --- Async submissions ---
-    if ((name === "claude" || name === "claude-reply") && args.async) {
+    if (name === "claude" || name === "claude-reply") {
       // Attached before the wait for `system/init`, and stopped here on
       // purpose: a cancel can only land while the response is still owed, which
       // is exactly when the client has no sessionId yet. A turn left running
@@ -334,26 +345,29 @@ async function handleToolCall(id, params) {
       call.turn = turn;
       if (call.cancelled) cancelTurn(turn);
       // The submission answers with the sessionId, which only exists once the
-      // turn is up (or has settled).
-      await turn.readyPromise;
+      // turn is up (or has settled). Bound that handshake independently of the
+      // answer's much longer turn timeout so a stuck CLI startup cannot reach
+      // the MCP client's outer transport timeout.
+      if (!(await waitForInitialization(turn))) {
+        engine.failBeforeInitialization(
+          turn,
+          `Claude did not initialize within ${INIT_TIMEOUT_MS}ms. The startup was stopped; retry ${name}.`,
+        );
+      }
+      if (!turn.sawInit || !turn.sessionId) {
+        sendToolFailure(
+          id,
+          turn.error?.message || "Claude failed to initialize with a sessionId",
+          call,
+        );
+        return;
+      }
       sendJson(id, engine.snapshotForSubmission(turn), call);
       return;
     }
 
-    // --- Session tools ---
     if (name === "claude-result") {
-      // `wait: true` parks until the turn settles — up to the full turn
-      // timeout. A cancelled request may no longer be answered, so staying
-      // parked is pure retention: give up as soon as the cancel lands. The turn
-      // itself keeps running; an async turn is stopped through `claude-cancel`
-      // alone. `Promise.race` subscribes to the result either way, so a
-      // rejection arriving after the cancel won is still handled.
-      const outcome = await Promise.race([
-        engine.result(args),
-        call.cancelSignal,
-      ]);
-      if (outcome === CANCELLED) return;
-      sendJson(id, outcome, call);
+      sendJson(id, engine.result({ sessionId: args.sessionId }), call);
       return;
     }
     if (name === "claude-cancel") {
@@ -361,34 +375,7 @@ async function handleToolCall(id, params) {
       return;
     }
 
-    // --- Sync tool calls ---
-    // Not awaited: the turn record has to be reachable from the first tick, so
-    // a `notifications/cancelled` arriving before `system/init` can stop it.
-    let turn;
-    if (name === "claude") {
-      turn = engine.beginStart(args);
-    } else if (name === "claude-reply") {
-      turn = engine.beginReply(args);
-    } else {
-      sendError(id, -32602, `Unknown tool: ${name}`, call);
-      return;
-    }
-    call.turn = turn;
-    // Re-check: a cancellation that landed before the turn was attached found
-    // nothing to stop.
-    if (call.cancelled) cancelTurn(turn);
-
-    const result = await engine.awaitTurn(turn);
-    const content = [{ type: "text", text: result.output }];
-    if (result.sessionId) {
-      content.push({
-        type: "text",
-        text: `\n[SESSION_ID: ${result.sessionId}]${
-          result.model ? `\n[MODEL: ${result.model}]` : ""
-        }`,
-      });
-    }
-    sendResponse(id, { content }, call);
+    sendError(id, -32602, `Unknown tool: ${name}`, call);
   } catch (e) {
     // A tool that failed is a *result*, not a JSON-RPC error: the model that
     // called it has to see why. Protocol errors are reserved for envelopes the
@@ -399,6 +386,21 @@ async function handleToolCall(id, params) {
     // reused the id while this handler was still settling, and the entry then
     // belongs to the successor.
     if (liveCalls.get(id) === call) liveCalls.delete(id);
+  }
+}
+
+async function waitForInitialization(turn) {
+  let timer;
+  try {
+    return await Promise.race([
+      turn.readyPromise.then(() => true),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(false), INIT_TIMEOUT_MS);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -447,10 +449,9 @@ function sendError(id, code, message, call = liveCalls.get(id)) {
 // ---------------------------------------------------------------------------
 
 /**
- * Close the live turns, then let the requests they were blocking answer before
- * the process goes away — a client waiting on a sync `claude` call gets a
- * failed tool result instead of a silently dropped connection. Bounded, because
- * a child that refuses to die must not hold the server open.
+ * Close live turns and let any initialization requests settle before the
+ * process exits. Bounded, because a child that refuses to die must not hold the
+ * server open.
  */
 async function shutdown() {
   if (shuttingDown) return;

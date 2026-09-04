@@ -10,6 +10,7 @@
 import test, { after, before, describe } from "node:test";
 import assert from "node:assert/strict";
 import { systemText, toolResults } from "../helpers/mock-api.mjs";
+import { runSession } from "../helpers/harness.mjs";
 import {
   ALIAS_BRIDGE_MCP_TOOL,
   BRIDGE_MCP_TOOL,
@@ -58,16 +59,14 @@ describe("the operator's own configuration is what loads", () => {
   after(async () => ctx?.stop());
 
   test("a turn completes against the real CLI", async () => {
-    const response = await ctx.server.call(
+    const result = await runSession(
+      ctx.server,
       "claude",
       { prompt: "Say hello.", cwd: ctx.sandbox.repo },
       120000,
     );
-    assert.equal(response.error, undefined, JSON.stringify(response.error));
-    assert.match(response.result.content[0].text, /isolation check done/);
-    // "mock-model" is the mock API's assistant-message model: through the real
-    // CLI, the trailer follows what actually served the turn.
-    assert.match(response.result.content[1].text, /\[MODEL: mock-model\]/);
+    assert.match(result.output, /isolation check done/);
+    assert.equal(result.model, "mock-model");
   });
 
   test("both the user and the project hook ran", () => {
@@ -154,12 +153,12 @@ describe("MCP tool availability", () => {
     // the callback indistinguishable from an unruled one (no `decisionReason`,
     // no `matchedAskRule` on the pinned CLI), so the tool still runs — the
     // documented ask-on-MCP limitation, pinned here.
-    const response = await ctx.server.call(
+    await runSession(
+      ctx.server,
       "claude",
       { prompt: "Use the repo tool.", cwd: ctx.sandbox.repo },
       120000,
     );
-    assert.equal(response.error, undefined, JSON.stringify(response.error));
     const results = toolResults(ctx.mock.mainCalls()[1]);
     assert.equal(results[0].isError, false, JSON.stringify(results));
     assert.match(results[0].text, new RegExp(MCP_TOOL_OUTPUT));
@@ -170,12 +169,12 @@ describe("MCP tool availability", () => {
     // short-circuits before it. A wrapper that approved MCP tools terminally
     // would be escalating privileges against the operator's settings.
     const before = ctx.mock.mainCalls().length;
-    const response = await ctx.server.call(
+    await runSession(
+      ctx.server,
       "claude",
       { prompt: "Use the deny tool.", cwd: ctx.sandbox.repo },
       120000,
     );
-    assert.equal(response.error, undefined, JSON.stringify(response.error));
     const results = toolResults(ctx.mock.mainCalls()[before + 1]);
     assert.equal(results[0].isError, true, JSON.stringify(results));
     assert.ok(
@@ -193,12 +192,12 @@ describe("MCP tool availability", () => {
     for (const writable of [false, true]) {
       test(`${bridgeTool} is hidden (writable=${writable})`, async () => {
         const before = ctx.mock.mainCalls().length;
-        const response = await ctx.server.call(
+        await runSession(
+          ctx.server,
           "claude",
           { prompt: "Call the agent bridge.", cwd: ctx.sandbox.repo, writable },
           120000,
         );
-        assert.equal(response.error, undefined, JSON.stringify(response.error));
         const results = toolResults(ctx.mock.mainCalls()[before + 1]);
         assert.equal(results[0].isError, true, JSON.stringify(results));
         assert.match(results[0].text, /No such tool available/i);
@@ -210,12 +209,12 @@ describe("MCP tool availability", () => {
   for (const writable of [false, true]) {
     test(`the fallback hook denies an alias (writable=${writable})`, async () => {
       const before = ctx.mock.mainCalls().length;
-      const response = await ctx.server.call(
+      await runSession(
+        ctx.server,
         "claude",
         { prompt: "Call the Codex alias.", cwd: ctx.sandbox.repo, writable },
         120000,
       );
-      assert.equal(response.error, undefined, JSON.stringify(response.error));
       const results = toolResults(ctx.mock.mainCalls()[before + 1]);
       assert.equal(results[0].isError, true, JSON.stringify(results));
       assert.match(results[0].text, /Agent-bridge MCP servers are not available/);
@@ -251,12 +250,12 @@ describe("the child process environment", () => {
   after(async () => ctx?.stop());
 
   test("CLAUDE_CODE_* is stripped, ordinary vars are inherited", async () => {
-    const response = await ctx.server.call(
+    await runSession(
+      ctx.server,
       "claude",
       { prompt: "Probe the environment.", cwd: ctx.sandbox.repo, writable: true },
       120000,
     );
-    assert.equal(response.error, undefined, JSON.stringify(response.error));
 
     const results = toolResults(ctx.mock.mainCalls()[1]);
     assert.equal(results.length, 1, JSON.stringify(results));
