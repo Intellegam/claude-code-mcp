@@ -177,19 +177,6 @@ await scenario("read-only consultation answers from the repo", async () => {
   });
   const output = result.output;
   assert(/claude-runner\.js/.test(output), "answer does not cite the file");
-  assert(result.contextTokens > 0, "no real-model context usage was reported");
-  assert(
-    result.autoCompactWindow === 320_000,
-    `unexpected MCP auto-compact window: ${result.autoCompactWindow}`,
-  );
-  assert(
-    result.autoCompactThreshold > 0,
-    "no effective auto-compact threshold was reported",
-  );
-  assert(
-    result.isAutoCompactEnabled === true,
-    "auto-compaction is not enabled for the MCP session",
-  );
   sessionId = result.sessionId;
   assert(sessionId, "no session id returned");
 });

@@ -10,7 +10,7 @@
 
 import test, { describe } from "node:test";
 import assert from "node:assert/strict";
-import { ClaudeRunner, createRunnerFactory } from "../../lib/claude-runner.js";
+import { createRunnerFactory } from "../../lib/claude-runner.js";
 import { createEngine } from "../../lib/engine.js";
 
 /**
@@ -43,9 +43,6 @@ function fakeRunners(script) {
       init: (sessionId) => runner.events.onInit(sessionId),
       model: (model) => runner.events.onModel(model),
       text: (text) => runner.events.onText(text),
-      usage: (usage) => runner.events.onUsage(usage),
-      compact: (boundary) => runner.events.onCompact(boundary),
-      contextUsage: (usage) => runner.events.onContextUsage(usage),
       result: (patch = {}) =>
         runner.events.onResult({
           subtype: "success",
@@ -107,51 +104,6 @@ async function startedEngine(sessionId = "s-1", engineOptions = {}) {
 }
 
 describe("terminal-state precedence", () => {
-  for (const action of ["cancel", "timeout", "shutdown"]) {
-    test(`received success survives ${action} during optional telemetry`, async () => {
-      let releaseRead;
-      let readStarted;
-      const reading = new Promise((resolve) => { readStarted = resolve; });
-      const context = new Promise((resolve) => { releaseRead = resolve; });
-      let interrupts = 0;
-      let closed = false;
-      const engine = createEngine({
-        timeoutMs: action === "timeout" ? 50 : 60_000,
-        cancelWatchdogMs: 10,
-        createRunner: () => new ClaudeRunner({
-          options: {},
-          query: () => ({
-            async *[Symbol.asyncIterator]() {
-              yield { type: "system", subtype: "init", session_id: "s-1" };
-              yield { type: "result", subtype: "success", result: "the answer" };
-            },
-            getContextUsage() { readStarted(); return context; },
-            async interrupt() { interrupts += 1; },
-            async close() {
-              await new Promise((resolve) => setTimeout(resolve, 20));
-              closed = true;
-            },
-          }),
-        }),
-      });
-      try {
-        const turn = await submitStart(engine, { prompt: "hi", cwd: "/repo" });
-        await reading;
-        if (action === "cancel") engine.cancel({ sessionId: turn.sessionId });
-        if (action === "shutdown") await engine.shutdown();
-        const snap = await settled(engine, turn.sessionId);
-        assert.equal(snap.status, "succeeded");
-        assert.equal(snap.output, "the answer");
-        assert.equal(snap.error, null);
-        assert.equal(interrupts, 0);
-        if (action === "shutdown") assert.equal(closed, true);
-      } finally {
-        releaseRead(null);
-        await engine.shutdown();
-      }
-    });
-  }
-
   test("an observed result beats a later iterator throw", async () => {
     const { engine, turn, runners } = await startedEngine();
     runners[0].result({ text: "the answer" });
@@ -539,99 +491,31 @@ describe("model reporting", () => {
   });
 });
 
-describe("context and compaction telemetry", () => {
-  test("effective context fields stay unknown without a CLI report", async () => {
-    const createRunner = fakeRunners((runner) => runner.init("s-1"));
-    const engine = createEngine({
-      createRunner,
-      timeoutMs: 60_000,
-      autoCompactWindow: 320_000,
-    });
+test("passive diagnostics keep the latest input, freeze on settlement, and reset on reply", async () => {
+  const { engine, turn, runners } = await startedEngine();
+  const initial = engine.result({ sessionId: turn.sessionId });
+  assert.equal(initial.contextTokens, null);
+  assert.equal(initial.compactedThisTurn, false);
+  runners[0].events.onUsage({ contextTokens: 80_000 });
+  runners[0].events.onCompact();
+  runners[0].events.onUsage({ contextTokens: 10_000 });
+  runners[0].result({ text: "answer" });
+  const snap = await settled(engine, turn.sessionId);
+  assert.equal(snap.contextTokens, 10_000);
+  assert.equal(snap.compactedThisTurn, true);
 
-    const turn = await submitStart(engine, { prompt: "hi", cwd: "/repo" });
-    createRunner.created[0].usage({ contextTokens: 271_005 });
-    createRunner.created[0].result({
-      text: "ok",
-      modelContextWindow: 1_000_000,
-    });
-
-    const snap = await settled(engine, turn.sessionId);
-    assert.equal(snap.contextWindow, null);
-    assert.equal(snap.contextPercent, null);
-    assert.equal(snap.autoCompactThreshold, null);
-    assert.equal(snap.isAutoCompactEnabled, null);
-    assert.equal(snap.autoCompactWindow, 320_000);
-    assert.equal(snap.modelContextWindow, 1_000_000);
-  });
-
-  test("snapshots expose authoritative context and effective compaction state", async () => {
-    const createRunner = fakeRunners((runner) => runner.init("s-1"));
-    const engine = createEngine({
-      createRunner,
-      timeoutMs: 60_000,
-      autoCompactWindow: 320_000,
-    });
-
-    const turn = await submitStart(engine, { prompt: "hi", cwd: "/repo" });
-    const runner = createRunner.created[0];
-    runner.model("serving-model");
-    runner.usage({ contextTokens: 271_005 });
-    runner.compact({
-      trigger: "auto",
-      preTokens: 287_123,
-      postTokens: 42_000,
-      durationMs: 1_234,
-    });
-    runner.contextUsage({
-      contextTokens: 49_000,
-      contextWindow: 320_000,
-      modelContextWindow: 1_000_000,
-      contextPercent: 15.3,
-      autoCompactThreshold: 287_000,
-      isAutoCompactEnabled: true,
-    });
-    runner.result({ text: "ok", modelContextWindow: 1_000_000 });
-
-    const snap = await settled(engine, turn.sessionId);
-    assert.equal(snap.contextTokens, 49_000);
-    assert.equal(snap.peakContextTokens, 287_123);
-    assert.equal(snap.contextWindow, 320_000);
-    assert.equal(snap.modelContextWindow, 1_000_000);
-    assert.equal(snap.autoCompactWindow, 320_000);
-    assert.equal(snap.autoCompactThreshold, 287_000);
-    assert.equal(snap.isAutoCompactEnabled, true);
-    assert.equal(snap.contextPercent, 15.3);
-    assert.equal(snap.compactionCount, 1);
-    assert.equal(snap.turnCompactionCount, 1);
-    assert.deepEqual(snap.lastCompaction, {
-      trigger: "auto",
-      preTokens: 287_123,
-      postTokens: 42_000,
-      durationMs: 1_234,
-    });
-  });
-
-  test("session compaction totals survive when the previous turn is discarded", async () => {
-    const createRunner = fakeRunners((runner) => runner.init("s-1"));
-    const engine = createEngine({ createRunner, timeoutMs: 60_000 });
-
-    await submitStart(engine, { prompt: "hi", cwd: "/repo" });
-    createRunner.created[0].compact({
-      trigger: "auto",
-      preTokens: 200_000,
-      postTokens: 40_000,
-    });
-    createRunner.created[0].result({ text: "ok" });
-    await settled(engine, "s-1");
-
-    await submitReply(engine, { sessionId: "s-1", prompt: "again" });
-    createRunner.created[1].usage({ contextTokens: 50_000 });
-    createRunner.created[1].result({ text: "continued" });
-    const snap = await settled(engine, "s-1");
-    assert.equal(engine._turns.size, 1);
-    assert.equal(snap.compactionCount, 1);
-    assert.equal(snap.turnCompactionCount, 0);
-    assert.equal(snap.lastCompaction.preTokens, 200_000);
-  });
-
+  await submitReply(engine, { sessionId: turn.sessionId, prompt: "continue" });
+  runners[0].events.onUsage({ contextTokens: 999 });
+  runners[0].events.onCompact();
+  assert.deepEqual(engine.snapshotForSubmission(turn), snap);
+  const reply = engine.result({ sessionId: turn.sessionId });
+  assert.equal(reply.contextTokens, null);
+  assert.equal(reply.compactedThisTurn, false);
+  runners[1].result({ text: "continued" });
+  await settled(engine, turn.sessionId);
+  runners[1].events.onUsage({ contextTokens: 999 });
+  runners[1].events.onCompact();
+  assert.equal(engine.result({ sessionId: turn.sessionId }).contextTokens, null);
+  assert.equal(engine.result({ sessionId: turn.sessionId }).compactedThisTurn, false);
+  await engine.shutdown();
 });

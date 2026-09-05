@@ -144,43 +144,6 @@ describe("asynchronous session API", () => {
     assert.match(final.error.message, /mock failure/);
   });
 
-  test("terminal snapshots expose context, compaction, and guardrail state", async () => {
-    const submitted = snapshot(
-      await server.call("claude", {
-        prompt: "#compact #context-usage telemetry",
-      }),
-    );
-    const final = await pollUntil(server, submitted.sessionId, (state) => state.done);
-
-    assert.equal(final.status, "succeeded");
-    assert.equal(final.contextTokens, 65);
-    assert.equal(final.peakContextTokens, 287_123);
-    assert.equal(final.contextWindow, 320_000);
-    assert.equal(final.modelContextWindow, 1_000_000);
-    assert.equal(final.autoCompactWindow, 320_000);
-    assert.equal(final.autoCompactThreshold, 287_000);
-    assert.equal(final.isAutoCompactEnabled, true);
-    assert.equal(final.compactionCount, 1);
-    assert.equal(final.turnCompactionCount, 1);
-    assert.equal(final.lastCompaction.preTokens, 287_123);
-    assert.match(final.output, /"autoCompactWindow":320000/);
-  });
-
-  test("a hung optional context read is bounded", async () => {
-    const started = Date.now();
-    const submitted = snapshot(
-      await server.call("claude", {
-        prompt: "#context-usage-hang telemetry must not block completion",
-      }),
-    );
-    const final = await pollUntil(server, submitted.sessionId, (state) => state.done);
-    const elapsed = Date.now() - started;
-
-    assert.equal(final.status, "succeeded");
-    assert.ok(elapsed >= 900, "the control read exercised its timeout");
-    assert.ok(elapsed < 2_000, "optional telemetry stayed bounded");
-  });
-
   test("cancelling a running turn preserves the stable session id", async () => {
     const submitted = snapshot(
       await server.call("claude", { prompt: "#work=5000 cancel me" }),

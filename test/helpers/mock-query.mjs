@@ -13,9 +13,6 @@
  *   #error       error result, with `errors[]` populated
  *   #error-bare  error result *without* an `errors[]` array
  *   #throw       iterator throws, no result at all
- *   #compact     emit one auto compact boundary
- *   #context-usage return an SDK context-usage control snapshot
- *   #context-usage-hang never answer that control request
  *   #stderr=<t>  write <t> to the stderr callback
  *
  * Every success result carries a `[[mock:{...}]]` trailer describing the
@@ -34,9 +31,6 @@ function parseDirectives(text) {
     error: false,
     errorBare: false,
     throw: false,
-    compact: false,
-    contextUsage: false,
-    contextUsageHang: false,
     stderr: "",
   };
   const words = String(text).split(/\s+/);
@@ -63,15 +57,6 @@ function parseDirectives(text) {
         break;
       case "throw":
         directives.throw = true;
-        break;
-      case "compact":
-        directives.compact = true;
-        break;
-      case "context-usage":
-        directives.contextUsage = true;
-        break;
-      case "context-usage-hang":
-        directives.contextUsageHang = true;
         break;
       case "stderr":
         directives.stderr = (value || "").replace(/_/g, " ");
@@ -131,8 +116,6 @@ export function query({ prompt, options = {} }) {
     preInitInterrupts: 0,
     promptClosed: false,
     closed: false,
-    contextUsage: null,
-    contextUsageHang: false,
   };
 
   let signalInterrupt;
@@ -149,7 +132,6 @@ export function query({ prompt, options = {} }) {
       resume: options.resume ?? null,
       cwd: options.cwd ?? null,
       permissionMode: options.permissionMode ?? null,
-      settings: options.settings ? JSON.parse(options.settings) : null,
       promptHeldOpen: !state.promptClosed,
     })}]]`;
 
@@ -164,17 +146,6 @@ export function query({ prompt, options = {} }) {
     });
 
     const { directives, prompt: cleanPrompt } = parseDirectives(promptText);
-    state.contextUsageHang = directives.contextUsageHang;
-    if (directives.contextUsage) {
-      state.contextUsage = {
-        totalTokens: 65,
-        maxTokens: 320_000,
-        rawMaxTokens: 1_000_000,
-        percentage: 0,
-        autoCompactThreshold: 287_000,
-        isAutoCompactEnabled: true,
-      };
-    }
     const sessionId = options.resume || `mock-${crypto.randomUUID()}`;
     if (directives.stderr) options.stderr?.(`${directives.stderr}\n`);
 
@@ -274,19 +245,6 @@ export function query({ prompt, options = {} }) {
       return;
     }
 
-    if (directives.compact) {
-      channel.push({
-        type: "system",
-        subtype: "compact_boundary",
-        compact_metadata: {
-          trigger: "auto",
-          pre_tokens: 287_123,
-          post_tokens: 42_000,
-          duration_ms: 1_234,
-        },
-      });
-    }
-
     channel.push({
       type: "assistant",
       session_id: sessionId,
@@ -294,12 +252,6 @@ export function query({ prompt, options = {} }) {
         role: "assistant",
         model: "mock-model-2",
         content: [{ type: "text", text: `Mock response to: ${cleanPrompt}` }],
-        usage: {
-          input_tokens: 10,
-          cache_creation_input_tokens: 20,
-          cache_read_input_tokens: 30,
-          output_tokens: 5,
-        },
       },
     });
     channel.push({
@@ -308,9 +260,6 @@ export function query({ prompt, options = {} }) {
       is_error: false,
       result: `Mock response to: ${cleanPrompt}${trailer()}`,
       errors: [],
-      modelUsage: {
-        "mock-model-2": { contextWindow: 1_000_000 },
-      },
     });
     // Mirrors the SDK: with a streaming prompt the iterator stays open for the
     // next turn until the prompt stream completes.
@@ -336,10 +285,6 @@ export function query({ prompt, options = {} }) {
     async close() {
       state.closed = true;
       channel.end();
-    },
-    async getContextUsage() {
-      if (state.contextUsageHang) return new Promise(() => {});
-      return state.contextUsage;
     },
   };
 }

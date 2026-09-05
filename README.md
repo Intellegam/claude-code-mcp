@@ -100,14 +100,14 @@ claude-result({ sessionId: "e0dbaa09-…" })
 ```
 
 Returns the latest turn's snapshot: `status`, `done`, `output`, `model`,
-`error`, `elapsed`, plus context and compaction telemetry when the pinned CLI
-provides it. It always returns the current state immediately.
+`error`, `elapsed`, and two passive diagnostics. It returns immediately.
 
-Context fields include `contextTokens`, `peakContextTokens`, `contextWindow`,
-`modelContextWindow`, `contextPercent`, the configured MCP window, the
-CLI-reported effective threshold, `isAutoCompactEnabled`, and observed
-compact-boundary counts. These fields describe context, not provider cache
-hits or subscription usage.
+- `contextTokens`: latest observed model request's input tokens, including
+  cache-write and cache-read input; `null` until observed. Excludes output and
+  is not exact post-turn context fullness.
+- `compactedThisTurn`: whether a `compact_boundary` was observed in this turn.
+
+Both reset on each reply. Neither measures cache freshness or subscription usage.
 
 ### `claude-cancel` — cancel the active turn
 
@@ -229,8 +229,8 @@ through a settings file keeps working.
 The auto-compact window is passed in the CLI's flag-settings layer for both
 permission modes, so it overrides an operator file's value only for sessions
 started through this MCP. It is a context-quality guardrail, not a claimed
-subscription-cost optimization. The effective window may be clamped to the
-serving model; trust the values reported in the result snapshot.
+subscription-cost optimization. The CLI owns the actual trigger and may clamp
+the window to the serving model; the configured window is not a hard token cap.
 Auto-compaction can occur mid-task and summarize evidence still in use. Set a
 larger window or `off` if retaining that history is more important for your work.
 

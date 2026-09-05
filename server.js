@@ -34,7 +34,7 @@ const INIT_TIMEOUT_MS = positiveInteger(
   MAX_INIT_TIMEOUT_MS,
   MAX_INIT_TIMEOUT_MS,
 );
-const AUTO_COMPACT_WINDOW = resolveAutoCompactWindow();
+resolveAutoCompactWindow(); // Fail startup on an invalid MCP override.
 /** Upper bound on a clean shutdown before the process is torn down anyway. */
 const SHUTDOWN_GRACE_MS = 2_000;
 /**
@@ -60,7 +60,6 @@ const engine = createEngine({
   }),
   timeoutMs: TIMEOUT_MS,
   cancelWatchdogMs: CANCEL_WATCHDOG_MS,
-  autoCompactWindow: AUTO_COMPACT_WINDOW,
 });
 
 const INSTRUCTIONS = [
@@ -72,7 +71,7 @@ const INSTRUCTIONS = [
   `Initialization waits at most ${INIT_TIMEOUT_MS}ms; answers continue asynchronously after that handshake.`,
   "Session IDs work across `claude-reply`, `claude-result`, and `claude-cancel`.",
   "Start a fresh `claude` session at task or topic boundaries; use `claude-reply` only for tightly related follow-ups that benefit from exact conversational continuity.",
-  "Result snapshots report context usage and observed compaction state; use a short handoff when starting a fresh session that needs prior conclusions.",
+  "Include a short handoff when a fresh session needs prior conclusions.",
   "Pass `cwd` (repo root) so Claude reads the right project — the CLI loads that repo's own configuration and memory from there.",
 ].join(" ");
 
@@ -114,7 +113,7 @@ const TOOLS = [
   {
     name: "claude-result",
     description:
-      "Get the latest turn status, result, context usage, and compaction state for a Claude session.",
+      "Get the latest turn status and result. contextTokens is the latest observed request's input tokens (including cached input), not post-turn fullness; null until observed. compactedThisTurn reports whether a compact boundary was observed in this turn.",
     inputSchema: {
       type: "object",
       properties: {
