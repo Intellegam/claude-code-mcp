@@ -72,7 +72,7 @@ const INSTRUCTIONS = [
   `Initialization waits at most ${INIT_TIMEOUT_MS}ms; answers continue asynchronously after that handshake.`,
   "Session IDs work across `claude-reply`, `claude-result`, and `claude-cancel`.",
   "Start a fresh `claude` session at task or topic boundaries; use `claude-reply` only for tightly related follow-ups that benefit from exact conversational continuity.",
-  "Result snapshots report context and observed compaction state. If a completed session has more than 150000 context tokens and `cacheLikelyCold: true`, prefer a fresh session with a short handoff unless the next turn needs the prior evidence in detail.",
+  "Result snapshots report context usage and observed compaction state; use a short handoff when starting a fresh session that needs prior conclusions.",
   "Pass `cwd` (repo root) so Claude reads the right project — the CLI loads that repo's own configuration and memory from there.",
 ].join(" ");
 
@@ -114,7 +114,7 @@ const TOOLS = [
   {
     name: "claude-result",
     description:
-      "Get the latest turn status, result, context usage, compaction state, and process-local cache-cold heuristic for a Claude session.",
+      "Get the latest turn status, result, context usage, and compaction state for a Claude session.",
     inputSchema: {
       type: "object",
       properties: {

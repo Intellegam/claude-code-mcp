@@ -163,7 +163,6 @@ describe("asynchronous session API", () => {
     assert.equal(final.compactionCount, 1);
     assert.equal(final.turnCompactionCount, 1);
     assert.equal(final.lastCompaction.preTokens, 287_123);
-    assert.equal(final.cacheLikelyCold, false);
     assert.match(final.output, /"autoCompactWindow":320000/);
   });
 

@@ -10,7 +10,7 @@
 
 import test, { describe } from "node:test";
 import assert from "node:assert/strict";
-import { createRunnerFactory } from "../../lib/claude-runner.js";
+import { ClaudeRunner, createRunnerFactory } from "../../lib/claude-runner.js";
 import { createEngine } from "../../lib/engine.js";
 
 /**
@@ -107,6 +107,51 @@ async function startedEngine(sessionId = "s-1", engineOptions = {}) {
 }
 
 describe("terminal-state precedence", () => {
+  for (const action of ["cancel", "timeout", "shutdown"]) {
+    test(`received success survives ${action} during optional telemetry`, async () => {
+      let releaseRead;
+      let readStarted;
+      const reading = new Promise((resolve) => { readStarted = resolve; });
+      const context = new Promise((resolve) => { releaseRead = resolve; });
+      let interrupts = 0;
+      let closed = false;
+      const engine = createEngine({
+        timeoutMs: action === "timeout" ? 50 : 60_000,
+        cancelWatchdogMs: 10,
+        createRunner: () => new ClaudeRunner({
+          options: {},
+          query: () => ({
+            async *[Symbol.asyncIterator]() {
+              yield { type: "system", subtype: "init", session_id: "s-1" };
+              yield { type: "result", subtype: "success", result: "the answer" };
+            },
+            getContextUsage() { readStarted(); return context; },
+            async interrupt() { interrupts += 1; },
+            async close() {
+              await new Promise((resolve) => setTimeout(resolve, 20));
+              closed = true;
+            },
+          }),
+        }),
+      });
+      try {
+        const turn = await submitStart(engine, { prompt: "hi", cwd: "/repo" });
+        await reading;
+        if (action === "cancel") engine.cancel({ sessionId: turn.sessionId });
+        if (action === "shutdown") await engine.shutdown();
+        const snap = await settled(engine, turn.sessionId);
+        assert.equal(snap.status, "succeeded");
+        assert.equal(snap.output, "the answer");
+        assert.equal(snap.error, null);
+        assert.equal(interrupts, 0);
+        if (action === "shutdown") assert.equal(closed, true);
+      } finally {
+        releaseRead(null);
+        await engine.shutdown();
+      }
+    });
+  }
+
   test("an observed result beats a later iterator throw", async () => {
     const { engine, turn, runners } = await startedEngine();
     runners[0].result({ text: "the answer" });
@@ -564,9 +609,6 @@ describe("context and compaction telemetry", () => {
       postTokens: 42_000,
       durationMs: 1_234,
     });
-    assert.equal(snap.cacheLikelyCold, false);
-    assert.equal(snap.idleSeconds, 0);
-    assert.equal(snap.lastRequestAt, new Date(turn.createdAt).toISOString());
   });
 
   test("session compaction totals survive when the previous turn is discarded", async () => {
@@ -592,15 +634,4 @@ describe("context and compaction telemetry", () => {
     assert.equal(snap.lastCompaction.preTokens, 200_000);
   });
 
-  test("the cache-cold field is a dynamic terminal-session heuristic", async () => {
-    const { engine, turn, runners } = await startedEngine();
-    runners[0].result({ text: "ok" });
-    await settled(engine, turn.sessionId);
-
-    const retained = engine._turns.get(turn.id);
-    retained.finishedAt = Date.now() - 60 * 60 * 1000 - 1_500;
-    const snap = engine.result({ sessionId: turn.sessionId });
-    assert.equal(snap.cacheLikelyCold, true);
-    assert.ok(snap.idleSeconds >= 3_601);
-  });
 });

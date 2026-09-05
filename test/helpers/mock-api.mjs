@@ -10,6 +10,7 @@
  *   { text: "..." }                       — a plain text answer
  *   { text: "...", slow: 30 }             — streamed line by line, 30ms apart
  *   { tool: "Write", input: {...} }       — a tool call
+ *   { text: "...", inputTokens: 80000 }   — report context usage to the CLI
  *
  * Every request is recorded, including the `system` prompt, the `messages`
  * (which carry tool results from the previous step, and the project CLAUDE.md
@@ -42,7 +43,7 @@ export function startMock({ turns = [], port = 0 } = {}) {
         content: [],
         stop_reason: null,
         stop_sequence: null,
-        usage: { input_tokens: 10, output_tokens: 0 },
+        usage: { input_tokens: turn.inputTokens ?? 10, output_tokens: 0 },
       },
     });
 

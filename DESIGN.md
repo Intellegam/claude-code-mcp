@@ -53,6 +53,9 @@ only once the turn has settled.
   response supplies the effective window, threshold and enabled state.
 - **Result.** A successful result first gets one best-effort, one-second
   `getContextUsage({detail: "summary"})` control read while stdin is still open.
+  The engine reserves the received answer before that read; cancellation,
+  timeout or shutdown during the read publishes success without waiting for
+  optional telemetry.
   Error or interrupted results skip it. The runner then publishes the result,
   then releases the hold-open promise; engine cleanup closes the query.
 - *Verified:* a successful interrupt produces `subtype:
@@ -87,9 +90,10 @@ snapshot reports its control-response values rather than deriving them.
 
 This is a quality guardrail, not a savings claim. Semantic boundaries remain a
 caller decision: start a fresh session for a new task/topic and resume only a
-tightly related follow-up. `cacheLikelyCold` means only that a terminal turn has
-been idle for an hour in this server process; it is a heuristic for that caller
-decision and never triggers compaction or session creation.
+tightly related follow-up, with a short handoff when a new session needs prior
+conclusions. The wrapper does not estimate cache freshness or change cache TTL.
+Auto-compaction can occur mid-task and replaces history with a summary; the
+default is an operational preference, not a measured quality or savings optimum.
 
 ## Terminal-state precedence
 
@@ -263,7 +267,7 @@ best-effort, and the docs say so.
 - Sessions are in-memory: after a restart, `claude-reply` needs an explicit `cwd`
   and falls back to read-only. Persisted SDK metadata is used only to verify the
   cwd; the wrapper's permission level, latest-turn state, compaction totals and
-  idle/cold metadata are not restored.
+  context telemetry are not restored.
 - A submission waits up to `CLAUDE_INIT_TIMEOUT_MS` (30s by default and as a
   hard maximum) for `system/init` because the native stable session ID does not
   exist before then. The setting may shorten but cannot lengthen that ceiling.

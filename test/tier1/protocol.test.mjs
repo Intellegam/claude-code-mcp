@@ -20,7 +20,6 @@ describe("MCP protocol", () => {
     assert.match(response.result.instructions, /second opinion/i);
     assert.match(response.result.instructions, /read-only/i);
     assert.match(response.result.instructions, /task or topic boundaries/i);
-    assert.match(response.result.instructions, /cacheLikelyCold/);
   });
 
   test("the initialization safety bound cannot exceed 30 seconds", async () => {

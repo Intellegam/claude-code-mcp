@@ -48,3 +48,59 @@ test("the 320k default reports its model-clamped effective threshold", async () 
   );
   assert.equal(snapshot.isAutoCompactEnabled, true);
 });
+
+test("the CLI compacts an oversized session and resumes the same session", async () => {
+  const ctx = await startTier2({
+    env: { CLAUDE_CODE_MCP_AUTO_COMPACT_WINDOW: "100000" },
+    turns: [
+      // Create summarizable history before reporting high input usage. A high
+      // first-request usage is treated as fixed system/tool overhead, which
+      // the CLI correctly refuses to compact.
+      { text: "Historical evidence. ".repeat(20_000) },
+      { text: "More evidence.", inputTokens: 80_000 },
+      // The pinned CLI's summary request carries tools and consumes a turn.
+      { text: "Historical evidence summary." },
+      { text: "Continued after compaction." },
+      { text: "Resumed compacted session." },
+    ],
+  });
+  try {
+    const first = await runSession(ctx.server, "claude", {
+      prompt: "Remember the initial context.",
+      cwd: ctx.sandbox.repo,
+    });
+    const oversized = await runSession(ctx.server, "claude-reply", {
+      sessionId: first.sessionId,
+      cwd: ctx.sandbox.repo,
+      prompt: "Gather more evidence.",
+    });
+    assert.ok(oversized.contextTokens > oversized.autoCompactThreshold);
+    const compacted = await runSession(ctx.server, "claude-reply", {
+      sessionId: first.sessionId,
+      cwd: ctx.sandbox.repo,
+      prompt: "Continue the task.",
+    });
+    assert.equal(compacted.sessionId, first.sessionId);
+    assert.ok(compacted.turnCompactionCount >= 1);
+    assert.equal(compacted.lastCompaction.trigger, "auto");
+    assert.ok(compacted.lastCompaction.preTokens >= oversized.autoCompactThreshold);
+    assert.ok(compacted.lastCompaction.postTokens < compacted.lastCompaction.preTokens);
+    assert.ok(compacted.contextTokens < oversized.contextTokens);
+    assert.match(compacted.output, /Continued after compaction/);
+
+    const resumed = await runSession(ctx.server, "claude-reply", {
+      sessionId: first.sessionId,
+      cwd: ctx.sandbox.repo,
+      prompt: "Continue once more.",
+    });
+    assert.equal(resumed.sessionId, first.sessionId);
+    assert.equal(resumed.turnCompactionCount, 0);
+    assert.equal(resumed.compactionCount, compacted.compactionCount);
+    assert.match(resumed.output, /Resumed compacted session/);
+    const resumedHistory = JSON.stringify(ctx.mock.mainCalls().at(-1).messages);
+    assert.match(resumedHistory, /Historical evidence summary/);
+    assert.ok(resumedHistory.length < 100_000, "resume uses the compacted history");
+  } finally {
+    await ctx.stop();
+  }
+});

@@ -47,9 +47,11 @@ Test seams (read from the *server's* env, never from tool arguments):
 - **After an error result the message iterator throws.** That throw is expected
   and is suppressed when a result was already observed.
 - **`result` messages may have no `errors[]`.** Never index it unguarded.
-- **Context usage is a pre-settle control read.** `onResult` synchronously
-  settles the engine turn, so the bounded `getContextUsage` request must finish
-  before `onResult`; error/interrupt results skip it.
+- **Context usage must never override a received success.** `onResultObserved`
+  reserves the answer before the bounded `getContextUsage` read. Normally the
+  read finishes before `onResult` settles the turn; cancellation, timeout or
+  shutdown instead publishes the reserved success immediately. Error/interrupt
+  results skip the read.
 - **The configured auto-compact window is not the effective policy.** Trust the
   CLI-reported effective window, threshold and enabled state; model clamping
   and operator disable controls can change them.

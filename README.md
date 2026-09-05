@@ -106,9 +106,8 @@ provides it. It always returns the current state immediately.
 Context fields include `contextTokens`, `peakContextTokens`, `contextWindow`,
 `modelContextWindow`, `contextPercent`, the configured MCP window, the
 CLI-reported effective threshold, `isAutoCompactEnabled`, and observed
-compact-boundary counts. `lastRequestAt`, `idleSeconds`, and
-`cacheLikelyCold` are process-local timing metadata; the last field is only a
-one-hour TTL heuristic, not proof that Anthropic's cache missed.
+compact-boundary counts. These fields describe context, not provider cache
+hits or subscription usage.
 
 ### `claude-cancel` — cancel the active turn
 
@@ -155,10 +154,8 @@ one turn may be active at a time.
 
 Start a fresh session at a meaningful task or topic boundary; use
 `claude-reply` only when the follow-up benefits from exact conversational
-continuity. For a completed session above 150k context tokens whose snapshot
-reports `cacheLikelyCold: true`, prefer a fresh session with a short handoff
-unless the next turn needs the prior evidence in detail. The server reports the
-signal but never makes that semantic decision automatically.
+continuity. Include a short handoff when the new session needs prior
+conclusions. The server never makes that semantic decision automatically.
 
 ## What the consulted Claude can see and do
 
@@ -234,6 +231,8 @@ permission modes, so it overrides an operator file's value only for sessions
 started through this MCP. It is a context-quality guardrail, not a claimed
 subscription-cost optimization. The effective window may be clamped to the
 serving model; trust the values reported in the result snapshot.
+Auto-compaction can occur mid-task and summarize evidence still in use. Set a
+larger window or `off` if retaining that history is more important for your work.
 
 ## Development
 
