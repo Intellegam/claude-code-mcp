@@ -23,11 +23,14 @@ import { createRunnerFactory, loadSdk } from "./lib/claude-runner.js";
 import { resolveAutoCompactWindow } from "./lib/isolation.js";
 
 const VERSION = "0.2.1";
-const TIMEOUT_MS =
-  parseInt(process.env.CLAUDE_TIMEOUT_MS, 10) || DEFAULT_TIMEOUT_MS;
-const CANCEL_WATCHDOG_MS =
-  parseInt(process.env.CLAUDE_CANCEL_WATCHDOG_MS, 10) ||
-  DEFAULT_CANCEL_WATCHDOG_MS;
+const TIMEOUT_MS = positiveInteger(
+  process.env.CLAUDE_TIMEOUT_MS,
+  DEFAULT_TIMEOUT_MS,
+);
+const CANCEL_WATCHDOG_MS = positiveInteger(
+  process.env.CLAUDE_CANCEL_WATCHDOG_MS,
+  DEFAULT_CANCEL_WATCHDOG_MS,
+);
 const MAX_INIT_TIMEOUT_MS = 30_000;
 const INIT_TIMEOUT_MS = positiveInteger(
   process.env.CLAUDE_INIT_TIMEOUT_MS,
@@ -44,7 +47,7 @@ const SHUTDOWN_GRACE_MS = 2_000;
  */
 const MAX_LINE_CHARS = 10 * 1024 * 1024;
 
-function positiveInteger(value, fallback, maximum) {
+function positiveInteger(value, fallback, maximum = 2_147_483_647) {
   if (typeof value !== "string" || !/^\d+$/.test(value)) return fallback;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0
@@ -486,4 +489,3 @@ async function shutdown() {
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
-process.stdin.on("end", shutdown);

@@ -316,11 +316,47 @@ describe("cancelling a turn that has not initialized", () => {
     assert.equal(turn.status, "failed");
     assert.equal(turn.error.source, "init_timeout");
     assert.equal(runners[0].closed, true);
-    assert.equal(engine._turns.size, 0, "no unreachable turn is retained");
+    assert.equal(engine._liveTurns.size, 0, "no unreachable turn is retained");
   });
 });
 
 describe("sessions", () => {
+  test("a pre-init reply owns the session until settled, including after collisions", async () => {
+    const createRunner = fakeRunners();
+    const engine = createEngine({ createRunner, timeoutMs: 60_000 });
+    try {
+      const first = engine.beginReply({ sessionId: "s-1", prompt: "resume" });
+      const rejected = engine.beginReply({ sessionId: "s-1", prompt: "overlap" });
+      assert.equal(rejected.status, "failed");
+      assert.equal(createRunner.created.length, 1);
+      assert.deepEqual(
+        engine.result({ sessionId: "s-1" }),
+        engine.snapshotForSubmission(first),
+      );
+
+      // A newly started CLI reporting the same native id must not steal it.
+      const collision = engine.beginStart({ prompt: "new", writable: true });
+      createRunner.created[1].init("s-1");
+      assert.equal(collision.status, "failed");
+      assert.equal(engine.result({ sessionId: "s-1" }).status, "starting");
+      engine.failBeforeInitialization(first, "startup failed");
+
+      const retry = engine.beginReply({ sessionId: "s-1", prompt: "retry" });
+      assert.equal(
+        createRunner.created[2].options.writable,
+        false,
+        "a colliding writable start must not escalate the existing session",
+      );
+      createRunner.created[0].done(new Error("late old runner event"));
+      engine.cancel({ sessionId: "s-1" });
+      assert.equal(retry.cancelRequested, true);
+      assert.equal(createRunner.created[2].interrupts, 1);
+      assert.equal(engine._liveTurns.size, 1);
+    } finally {
+      await engine.shutdown();
+    }
+  });
+
   test("a failed reply stays observable under the stable session id", async () => {
     const createRunner = fakeRunners((runner, index) => {
       runner.init("s-1");
@@ -375,10 +411,10 @@ describe("sessions", () => {
     assert.equal(turn.status, "failed");
     assert.equal(turn.sessionId, null);
     assert.match(turn.error.message, /without a sessionId/);
-    assert.equal(engine._turns.size, 0);
+    assert.equal(engine._liveTurns.size, 0);
   });
 
-  test("repeated replies do not grow the turn map", async () => {
+  test("completed replies leave the live set but keep the latest result", async () => {
     const createRunner = fakeRunners((runner) => runner.init("s-1"));
     const engine = createEngine({ createRunner, timeoutMs: 60_000 });
 
@@ -392,17 +428,18 @@ describe("sessions", () => {
       await settled(engine, "s-1");
     }
 
-    assert.equal(engine._turns.size, 1, "only the latest turn is retained");
+    assert.equal(engine._liveTurns.size, 0, "no completed turn remains live");
+    assert.equal(engine.result({ sessionId: "s-1" }).output, "answer 4");
   });
 
   test("turns that settle before reaching a session are not retained", async () => {
-    // All client-repeatable: an unbounded map is a denial of service.
+    // Invalid submissions must not accumulate in the live-turn registry.
     const { engine, turn, runners } = await startedEngine();
 
     await submitStart(engine, { prompt: "   " });
     await submitReply(engine, { prompt: "no session id" });
     await submitReply(engine, { sessionId: turn.sessionId, prompt: "collides" });
-    assert.equal(engine._turns.size, 1, "only the live turn is retained");
+    assert.equal(engine._liveTurns.size, 1, "only the live turn is retained");
 
     runners[0].result({ text: "ok" });
     await settled(engine, turn.sessionId);

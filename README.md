@@ -226,6 +226,11 @@ through a settings file keeps working.
 | `CLAUDE_CANCEL_WATCHDOG_MS`           | `30000` (30s)      | How long to wait after an interrupt before forcing                   |
 | `CLAUDE_CODE_MCP_AUTO_COMPACT_WINDOW` | `320000` tokens    | MCP-only window, 100k–1M; `off` leaves the operator/CLI policy alone |
 
+Timeout values must be positive decimal integers: invalid values fall back to
+the defaults. Safe integers above the limit are clamped (30s for initialization,
+2,147,483,647ms for the other timers); values beyond JavaScript's safe-integer
+range use the defaults. In contrast, an invalid auto-compact window fails startup.
+
 The auto-compact window is passed in the CLI's flag-settings layer for both
 permission modes, so it overrides an operator file's value only for sessions
 started through this MCP. It is a context-quality guardrail, not a claimed

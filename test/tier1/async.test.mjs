@@ -118,6 +118,42 @@ describe("asynchronous session API", () => {
     }
   });
 
+  for (const value of ["-5", "0", "1junk", " 30", "2147483648", "9007199254740992"]) {
+    test(`invalid timeout values default and oversized safe integers clamp: ${JSON.stringify(value)}`, async () => {
+      const configured = spawnServer({
+        env: {
+          CLAUDE_TIMEOUT_MS: value,
+          CLAUDE_CANCEL_WATCHDOG_MS: value,
+        },
+      });
+      try {
+        await configured.init();
+        const seed = snapshot(await configured.call("claude", {
+          prompt: "#init=20 #work=30 seed",
+        }));
+        assert.equal(
+          (await pollUntil(configured, seed.sessionId, (state) => state.done)).status,
+          "succeeded",
+          "a malformed or overflowing timer must not expire immediately",
+        );
+
+        // Cancel before init; a 1ms watchdog would discard the buffered interrupt.
+        const [reply] = await Promise.all(configured.callInOneChunk([
+          { name: "claude-reply", args: {
+            sessionId: seed.sessionId, prompt: "#init=100 #work=1000 cancel",
+          } },
+          { name: "claude-cancel", args: { sessionId: seed.sessionId } },
+        ]));
+        assert.equal(snapshot(reply).sessionId, seed.sessionId);
+        const cancelled = await pollUntil(configured, seed.sessionId, (state) => state.done);
+        assert.equal(cancelled.status, "cancelled");
+        assert.equal(cancelled.error, null, "interrupt completes before watchdog");
+      } finally {
+        await configured.close();
+      }
+    });
+  }
+
   test("claude-result always returns the current state immediately", async () => {
     const submitted = snapshot(
       await server.call("claude", { prompt: "#work=5000 slow" }),

@@ -12,9 +12,12 @@ order events are resolved in, and the trust model.
 Everything marked *verified* was established empirically against
 `@anthropic-ai/claude-agent-sdk@0.3.258` and its bundled CLI 2.1.x.
 
-The turn/session engine is ported from codex-mcp: turn records, session records,
-the one-active-turn guard, the cancel watchdog and terminal states follow the
-same design. This server adds model/context/compaction fields to snapshots. What is
+The turn/session engine originated in codex-mcp. Each session directly retains
+its latest turn; that turn's status is the one-active-turn guard. A separate set
+holds live turns for shutdown, including those awaiting a session ID. Completed
+turns leave the set; session records remain until server shutdown. The cancel
+watchdog and terminal states follow the sibling's design. This server adds
+model/context/compaction fields to snapshots. What is
 dropped is codex-mcp's app-server connection layer: there is no persistent
 Claude daemon. Each turn spawns its own CLI child through the SDK, and
 continuity comes from `resume`.
