@@ -490,3 +490,32 @@ describe("model reporting", () => {
     assert.equal(snap.model, "claude-test-model");
   });
 });
+
+test("passive diagnostics keep the latest input, freeze on settlement, and reset on reply", async () => {
+  const { engine, turn, runners } = await startedEngine();
+  const initial = engine.result({ sessionId: turn.sessionId });
+  assert.equal(initial.contextTokens, null);
+  assert.equal(initial.compactedThisTurn, false);
+  runners[0].events.onUsage({ contextTokens: 80_000 });
+  runners[0].events.onCompact();
+  runners[0].events.onUsage({ contextTokens: 10_000 });
+  runners[0].result({ text: "answer" });
+  const snap = await settled(engine, turn.sessionId);
+  assert.equal(snap.contextTokens, 10_000);
+  assert.equal(snap.compactedThisTurn, true);
+
+  await submitReply(engine, { sessionId: turn.sessionId, prompt: "continue" });
+  runners[0].events.onUsage({ contextTokens: 999 });
+  runners[0].events.onCompact();
+  assert.deepEqual(engine.snapshotForSubmission(turn), snap);
+  const reply = engine.result({ sessionId: turn.sessionId });
+  assert.equal(reply.contextTokens, null);
+  assert.equal(reply.compactedThisTurn, false);
+  runners[1].result({ text: "continued" });
+  await settled(engine, turn.sessionId);
+  runners[1].events.onUsage({ contextTokens: 999 });
+  runners[1].events.onCompact();
+  assert.equal(engine.result({ sessionId: turn.sessionId }).contextTokens, null);
+  assert.equal(engine.result({ sessionId: turn.sessionId }).compactedThisTurn, false);
+  await engine.shutdown();
+});

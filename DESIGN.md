@@ -13,8 +13,8 @@ Everything marked *verified* was established empirically against
 `@anthropic-ai/claude-agent-sdk@0.3.258` and its bundled CLI 2.1.x.
 
 The turn/session engine is ported from codex-mcp: turn records, session records,
-the one-active-turn guard, the cancel watchdog, terminal states and snapshot
-shapes are all the same, apart from the `model` field this server adds. What is
+the one-active-turn guard, the cancel watchdog and terminal states follow the
+same design. This server adds model/context/compaction fields to snapshots. What is
 dropped is codex-mcp's app-server connection layer: there is no persistent
 Claude daemon. Each turn spawns its own CLI child through the SDK, and
 continuity comes from `resume`.
@@ -47,9 +47,12 @@ only once the turn has settled.
   nothing (a window of roughly 350ms for a fresh session, longer whenever the
   CLI start is slow). A cancel arriving in that window is buffered as
   `cancelPending` and sent exactly once when init is observed.
-- **Result.** On a `result` message the runner settles the turn *first*, then
-  releases the hold-open promise — releasing closes stdin and can make the
-  iterator throw.
+- **Passive diagnostics.** Assistant usage supplies the latest request's input
+  tokens (direct + cache-write + cache-read, excluding output). Zero-token
+  synthetic rows are ignored. `system/compact_boundary` sets a per-turn boolean.
+  No extra control requests or changes to result settlement are needed.
+- **Result.** Publish the result, then release the hold-open promise; engine
+  cleanup closes the query.
 - *Verified:* a successful interrupt produces `subtype:
   "error_during_execution"` with `terminal_reason: "aborted_streaming"`, and the
   message iterator then **throws** (`Claude Code returned an error result:
@@ -70,6 +73,22 @@ only once the turn has settled.
   cwd before spawning the CLI. After a server restart, the SDK adapter validates
   the requested cwd against persisted session metadata before it starts the
   resumed query.
+
+## Context guardrail and session boundaries
+
+Every MCP-started session receives `autoCompactWindow: 320000` through the
+flag-settings layer unless `CLAUDE_CODE_MCP_AUTO_COMPACT_WINDOW=off` tells the
+wrapper not to override the operator/CLI policy. An integer from 100k to 1M
+selects a different MCP-only window; invalid values fail server startup. The
+CLI may clamp it to the serving model and owns the actual threshold. Snapshots
+do not infer the effective policy or exact post-turn context fullness.
+
+This is a quality guardrail, not a savings claim. Semantic boundaries remain a
+caller decision: start a fresh session for a new task/topic and resume only a
+tightly related follow-up, with a short handoff when a new session needs prior
+conclusions. The wrapper does not estimate cache freshness or change cache TTL.
+Auto-compaction can occur mid-task and replaces history with a summary; the
+default is an operational preference, not a measured quality or savings optimum.
 
 ## Terminal-state precedence
 
@@ -142,7 +161,7 @@ serve it:
 | --- | --- | --- |
 | `permissionMode` | unset | `bypassPermissions` + `allowDangerouslySkipPermissions` |
 | removed tools | `Write`, `Edit`, `NotebookEdit`, `Bash`, `Monitor`, `REPL`, `TaskCreate`, `TaskUpdate`, `TaskStop` + the always-blocked set | the always-blocked set |
-| settings | `disableSkillShellExecution` | — |
+| permission-specific settings | `disableSkillShellExecution` | — |
 | `canUseTool` | approves non-bridge MCP tools and out-of-tree `Read`/`Glob`/`Grep` at the gate reason; `matchedAskRule` denies first | not set (shadowed) |
 
 Always blocked, in both modes: `Task`/`Agent` (init reports the first name, the

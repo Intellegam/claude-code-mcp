@@ -33,7 +33,7 @@ install.
 ```toml
 [mcp_servers.claude-agent]
 command = "npx"
-args = ["-y", "github:Intellegam/claude-code-mcp#v0.2.0"]
+args = ["-y", "github:Intellegam/claude-code-mcp#v0.2.1"]
 ```
 
 Or from a local checkout:
@@ -100,7 +100,14 @@ claude-result({ sessionId: "e0dbaa09-…" })
 ```
 
 Returns the latest turn's snapshot: `status`, `done`, `output`, `model`,
-`error`, `elapsed`, …. It always returns the current state immediately.
+`error`, `elapsed`, and two passive diagnostics. It returns immediately.
+
+- `contextTokens`: latest observed model request's input tokens, including
+  cache-write and cache-read input; `null` until observed. Excludes output and
+  is not exact post-turn context fullness.
+- `compactedThisTurn`: whether a `compact_boundary` was observed in this turn.
+
+Both reset on each reply. Neither measures cache freshness or subscription usage.
 
 ### `claude-cancel` — cancel the active turn
 
@@ -144,6 +151,11 @@ Turn states: `starting` → `running` → `succeeded` | `failed` | `cancelled` |
 
 Multiple sessions run in parallel and are independent. Within one session, only
 one turn may be active at a time.
+
+Start a fresh session at a meaningful task or topic boundary; use
+`claude-reply` only when the follow-up benefits from exact conversational
+continuity. Include a short handoff when the new session needs prior
+conclusions. The server never makes that semantic decision automatically.
 
 ## What the consulted Claude can see and do
 
@@ -207,11 +219,20 @@ through a settings file keeps working.
 
 ## Configuration
 
-| Environment variable        | Default            | Description                                         |
-| --------------------------- | ------------------ | --------------------------------------------------- |
-| `CLAUDE_INIT_TIMEOUT_MS`    | `30000` (30s)      | Initialization wait; may be lowered, capped at 30s   |
-| `CLAUDE_TIMEOUT_MS`         | `1800000` (30 min) | Maximum time for one turn                           |
-| `CLAUDE_CANCEL_WATCHDOG_MS` | `30000` (30s)      | How long to wait after an interrupt before forcing  |
+| Environment variable                  | Default            | Description                                                         |
+| ------------------------------------- | ------------------ | ------------------------------------------------------------------- |
+| `CLAUDE_INIT_TIMEOUT_MS`              | `30000` (30s)      | Initialization wait; may be lowered, capped at 30s                   |
+| `CLAUDE_TIMEOUT_MS`                   | `1800000` (30 min) | Maximum time for one turn                                            |
+| `CLAUDE_CANCEL_WATCHDOG_MS`           | `30000` (30s)      | How long to wait after an interrupt before forcing                   |
+| `CLAUDE_CODE_MCP_AUTO_COMPACT_WINDOW` | `320000` tokens    | MCP-only window, 100k–1M; `off` leaves the operator/CLI policy alone |
+
+The auto-compact window is passed in the CLI's flag-settings layer for both
+permission modes, so it overrides an operator file's value only for sessions
+started through this MCP. It is a context-quality guardrail, not a claimed
+subscription-cost optimization. The CLI owns the actual trigger and may clamp
+the window to the serving model; the configured window is not a hard token cap.
+Auto-compaction can occur mid-task and summarize evidence still in use. Set a
+larger window or `off` if retaining that history is more important for your work.
 
 ## Development
 

@@ -1,6 +1,6 @@
 {
   "name": "claude-code-mcp",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "MCP server that lets an external agent (e.g. OpenAI Codex) consult Claude Code as a second-opinion agent",
   "repository": {
     "type": "git",

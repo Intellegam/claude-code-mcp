@@ -7,6 +7,7 @@ import {
   UNGRANTED_DENY_MESSAGE,
   buildChildEnv,
   buildQueryOptions,
+  resolveAutoCompactWindow,
 } from "../../lib/isolation.js";
 
 const PARENT_ENV = {
@@ -158,8 +159,64 @@ describe("query options", () => {
     const options = buildQueryOptions(base);
     assert.equal(typeof options.settings, "string");
     assert.deepEqual(JSON.parse(options.settings), {
+      autoCompactWindow: 320_000,
       disableSkillShellExecution: true,
     });
+  });
+
+  test("the MCP auto-compact window is scoped to both permission modes", () => {
+    for (const writable of [false, true]) {
+      const options = buildQueryOptions({
+        ...base,
+        writable,
+        parentEnv: {
+          ...PARENT_ENV,
+          CLAUDE_CODE_MCP_AUTO_COMPACT_WINDOW: "120000",
+        },
+      });
+      assert.equal(JSON.parse(options.settings).autoCompactWindow, 120_000);
+      assert.equal(
+        options.env.CLAUDE_CODE_MCP_AUTO_COMPACT_WINDOW,
+        undefined,
+        "the server setting is not forwarded to the child",
+      );
+    }
+  });
+
+  test("off removes only the MCP override", () => {
+    const readOnly = buildQueryOptions({
+      ...base,
+      parentEnv: {
+        ...PARENT_ENV,
+        CLAUDE_CODE_MCP_AUTO_COMPACT_WINDOW: "off",
+      },
+    });
+    assert.deepEqual(JSON.parse(readOnly.settings), {
+      disableSkillShellExecution: true,
+    });
+
+    const writable = buildQueryOptions({
+      ...base,
+      writable: true,
+      parentEnv: {
+        ...PARENT_ENV,
+        CLAUDE_CODE_MCP_AUTO_COMPACT_WINDOW: "off",
+      },
+    });
+    assert.equal(writable.settings, undefined);
+  });
+
+  test("invalid MCP auto-compact windows fail closed", () => {
+    for (const value of ["300k", "99999", "1000001", "-1"]) {
+      assert.throws(
+        () =>
+          resolveAutoCompactWindow({
+            CLAUDE_CODE_MCP_AUTO_COMPACT_WINDOW: value,
+          }),
+        /must be "off" or an integer between 100000 and 1000000/,
+        value,
+      );
+    }
   });
 
   test("writable mode bypasses permissions but keeps delegation blocked", () => {
@@ -168,6 +225,9 @@ describe("query options", () => {
     // The SDK requires the acknowledgement flag alongside the mode.
     assert.equal(options.allowDangerouslySkipPermissions, true);
     assert.deepEqual(options.disallowedTools, ALWAYS_DISALLOWED_TOOLS);
+    assert.deepEqual(JSON.parse(options.settings), {
+      autoCompactWindow: 320_000,
+    });
     for (const tool of ["Write", "Edit", "Bash", "TaskCreate"]) {
       assert.ok(!options.disallowedTools.includes(tool), `${tool} is allowed`);
     }
