@@ -33,7 +33,7 @@ install.
 ```toml
 [mcp_servers.claude-agent]
 command = "npx"
-args = ["-y", "github:Intellegam/claude-code-mcp#v0.2.1"]
+args = ["-y", "github:Intellegam/claude-code-mcp#v0.3.0"]
 ```
 
 Or from a local checkout:
@@ -64,7 +64,22 @@ claude({ prompt: "Does this plan handle the retry case?", cwd: "/path/to/repo" }
 claude({ prompt: "Fix the failing test in tests/test_auth.py", cwd: "/repo", writable: true })
 ```
 
-Parameters: `prompt` (required), `cwd`, `writable` (default false).
+Parameters: `prompt` (required), `cwd`, `model`, `writable` (default false).
+
+`model` accepts the family aliases `fable`, `opus`, `sonnet`, and `haiku`.
+Claude Code resolves them using its bundled runtime, provider, and configuration;
+the wrapper does not maintain model version mappings. Omit `model` to use the
+operator's normal default. Exact model IDs and other aliases are not accepted.
+The pinned SDK 0.3.280 bundles Claude Code 2.1.280, whose standard Anthropic
+`opus` alias resolves to Opus 5.5. Provider availability and configured alias
+overrides still apply; an old runtime does not automatically learn new releases.
+
+```js
+// Keep a planning conversation on Fable.
+claude({ prompt: "Review this implementation plan...", cwd: "/repo", model: "fable" })
+// Start a separate Opus implementation session with a concrete handoff.
+claude({ prompt: "Implement the agreed parser change in src/parser.js...", cwd: "/repo", model: "opus", writable: true })
+```
 
 Pass `cwd` — it is the repo Claude reads, and the CLI loads that repo's own
 configuration and `CLAUDE.md` from there.
@@ -81,7 +96,13 @@ is stopped and returns an actionable tool error.
 claude-reply({ sessionId: "e0dbaa09-…", prompt: "What about the timeout path?", cwd: "/path/to/repo" })
 ```
 
-Parameters: `sessionId` (required), `prompt` (required), `cwd`.
+Parameters: `sessionId` (required), `prompt` (required), `cwd`, `model`.
+
+An omitted `model` inherits the last selected family while the MCP server retains
+the session. An explicit family switches the resumed turn and subsequent replies;
+failed initialization does not replace the previous selection. After an MCP
+restart, pass `model` again to retain your choice: without it, the CLI uses its
+normal defaults. Selection does not change the session's write permissions.
 
 Resume is keyed by session id **and** cwd, so pass the same `cwd` the session was
 created with. While the server retains the session record, the engine rejects a
@@ -102,6 +123,9 @@ claude-result({ sessionId: "e0dbaa09-…" })
 Returns the latest turn's snapshot: `status`, `done`, `output`, `model`,
 `error`, `elapsed`, and two passive diagnostics. It returns immediately.
 
+- `model`: latest observed serving model, first from SDK initialization and then
+  from assistant responses; `null` until observed. It is not the requested alias
+  and can reflect a fallback. It resets on every turn.
 - `contextTokens`: latest observed model request's input tokens, including
   cache-write and cache-read input; `null` until observed. Excludes output and
   is not exact post-turn context fullness.
@@ -164,7 +188,7 @@ memory files, hooks, skills, plugins and MCP servers. The trade is a wider tool
 surface than a sealed sandbox, and the startup cost of your MCP servers on every
 turn — in exchange the consultation has the context and tooling you do.
 
-That includes the **model**: consultations use your `model` setting
+That includes the **model** when no family is selected: consultations use your `model` setting
 (`~/.claude/settings.json` or project settings) or an inherited
 `ANTHROPIC_MODEL` env var, else the CLI default — whatever an interactive
 client did or didn't persist there. The result snapshot's `model` field tells

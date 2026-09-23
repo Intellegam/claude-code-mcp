@@ -39,7 +39,7 @@ export function startMock({ turns = [], port = 0 } = {}) {
         id: `msg_${crypto.randomUUID()}`,
         type: "message",
         role: "assistant",
-        model: "mock-model",
+        model: turn.model ?? "mock-model",
         content: [],
         stop_reason: null,
         stop_sequence: null,
@@ -136,6 +136,7 @@ export function startMock({ turns = [], port = 0 } = {}) {
       calls.push({
         at: Date.now(),
         isMainTurn,
+        model: payload?.model,
         system: payload?.system,
         messages: payload?.messages,
         tools: (payload?.tools || []).map((tool) => tool.name),

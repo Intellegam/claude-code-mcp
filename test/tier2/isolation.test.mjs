@@ -41,7 +41,6 @@ const READ_ONLY_BUILTIN_TOOLS = [
   "Read",
   "ReportFindings",
   "Skill",
-  "TaskOutput",
   "WebFetch",
   "WebSearch",
 ];

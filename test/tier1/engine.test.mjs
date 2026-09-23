@@ -556,3 +556,100 @@ test("passive diagnostics keep the latest input, freeze on settlement, and reset
   assert.equal(engine.result({ sessionId: turn.sessionId }).compactedThisTurn, false);
   await engine.shutdown();
 });
+
+describe("model family selection", () => {
+  test("each family passes through; omission leaves the operator default alone", async () => {
+    for (const model of [undefined, "fable", "opus", "sonnet", "haiku"]) {
+      const createRunner = fakeRunners((runner) => {
+        runner.init("s-model");
+        runner.result();
+      });
+      const engine = createEngine({ createRunner });
+      await submitStart(engine, { prompt: "hello", model });
+      assert.equal(createRunner.created[0].options.model, model);
+      assert.equal(engine.result({ sessionId: "s-model" }).model, null);
+    }
+  });
+
+  test("replies inherit the requested family, not a fallback's observed model", async () => {
+    const createRunner = fakeRunners((runner) => {
+      runner.model("observed-fallback-model");
+      runner.init("s-model");
+      runner.result();
+    });
+    const engine = createEngine({ createRunner });
+    await submitStart(engine, { prompt: "plan", model: "fable" });
+    await submitReply(engine, { sessionId: "s-model", prompt: "continue" });
+    await submitReply(engine, { sessionId: "s-model", prompt: "switch", model: "opus" });
+    await submitReply(engine, { sessionId: "s-model", prompt: "continue" });
+    assert.deepEqual(createRunner.created.map((r) => r.options.model),
+      ["fable", "fable", "opus", "opus"]);
+    assert.equal(engine.result({ sessionId: "s-model" }).model, "observed-fallback-model");
+  });
+
+  test("invalid models fail before creating a runner or replacing the session", async () => {
+    const createRunner = fakeRunners((runner) => {
+      runner.init("s-model");
+      runner.result();
+    });
+    const engine = createEngine({ createRunner });
+    await submitStart(engine, { prompt: "hello", model: "opus" });
+    const original = engine.result({ sessionId: "s-model" });
+    for (const model of [null, "", "Opus", "opusplan", "best", "claude-opus-5-5", 42, {}, ["opus"]]) {
+      for (const submit of [submitStart, submitReply]) {
+        const turn = await submit(engine, { sessionId: "s-model", prompt: "hello", model });
+        assert.equal(turn.status, "failed");
+        assert.match(turn.error.message, /model must be one of/);
+      }
+    }
+    assert.equal(createRunner.created.length, 1);
+    assert.deepEqual(engine.result({ sessionId: "s-model" }), original);
+  });
+
+  test("failed initialization cannot change the remembered family", async () => {
+    const createRunner = fakeRunners((runner, index) => {
+      if (index === 1) return runner.done(new Error("startup failed"));
+      if (index === 2) return runner.init("wrong-session");
+      runner.init("s-model");
+      runner.result();
+    });
+    const engine = createEngine({ createRunner });
+    await submitStart(engine, { prompt: "hello", model: "fable" });
+    for (let i = 0; i < 2; i++) {
+      const failed = await submitReply(engine, { sessionId: "s-model", prompt: "switch", model: "opus" });
+      assert.equal(failed.status, "failed");
+    }
+    await submitReply(engine, { sessionId: "s-model", prompt: "continue" });
+    assert.equal(createRunner.created[3].options.model, "fable");
+  });
+
+  test("an overlapping reply cannot change the remembered family", async () => {
+    const createRunner = fakeRunners((runner) => runner.init("s-model"));
+    const engine = createEngine({ createRunner });
+    await submitStart(engine, { prompt: "hello", model: "fable" });
+    const rejected = await submitReply(engine, { sessionId: "s-model", prompt: "switch", model: "opus" });
+    assert.equal(rejected.status, "failed");
+    assert.equal(createRunner.created.length, 1);
+    createRunner.created[0].result();
+    await submitReply(engine, { sessionId: "s-model", prompt: "continue" });
+    assert.equal(createRunner.created[1].options.model, "fable");
+    createRunner.created[1].result();
+  });
+
+  test("unknown sessions accept an explicit family without granting write access", async () => {
+    for (const model of [undefined, "opus"]) {
+      const createRunner = fakeRunners((runner) => {
+        runner.init("s-model");
+        runner.result();
+      });
+      const engine = createEngine({ createRunner });
+      await submitReply(engine, { sessionId: "s-model", prompt: "resume", model, writable: true });
+      const options = createRunner.created[0].options;
+      assert.equal(options.model, model);
+      assert.equal(options.writable, false);
+      assert.equal(options.verifyResumeCwd, true);
+      await submitReply(engine, { sessionId: "s-model", prompt: "continue" });
+      assert.equal(createRunner.created[1].options.model, model);
+    }
+  });
+});
