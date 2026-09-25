@@ -16,13 +16,14 @@
 
 import {
   createEngine,
+  MODEL_FAMILIES,
   DEFAULT_CANCEL_WATCHDOG_MS,
   DEFAULT_TIMEOUT_MS,
 } from "./lib/engine.js";
 import { createRunnerFactory, loadSdk } from "./lib/claude-runner.js";
 import { resolveAutoCompactWindow } from "./lib/isolation.js";
 
-const VERSION = "0.2.1";
+const VERSION = "0.3.0";
 const TIMEOUT_MS = positiveInteger(
   process.env.CLAUDE_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
@@ -78,6 +79,13 @@ const INSTRUCTIONS = [
   "Pass `cwd` (repo root) so Claude reads the right project — the CLI loads that repo's own configuration and memory from there.",
 ].join(" ");
 
+const MODEL_SCHEMA = {
+  type: "string",
+  enum: MODEL_FAMILIES,
+  description:
+    "Model family, resolved by Claude Code using its runtime, provider, and configuration. On a new session, omission uses the operator default. Replies inherit the last selection while this server remembers it; pass model again after a server restart. The result's model reports the observed serving model.",
+};
+
 const TOOLS = [
   {
     name: "claude",
@@ -86,6 +94,7 @@ const TOOLS = [
       type: "object",
       properties: {
         prompt: { type: "string", description: "The prompt for Claude" },
+        model: MODEL_SCHEMA,
         cwd: { type: "string", description: "Working directory" },
         writable: {
           type: "boolean",
@@ -104,6 +113,7 @@ const TOOLS = [
       properties: {
         sessionId: { type: "string", description: "Claude session ID" },
         prompt: { type: "string", description: "Follow-up prompt" },
+        model: MODEL_SCHEMA,
         cwd: {
           type: "string",
           description:
@@ -116,7 +126,7 @@ const TOOLS = [
   {
     name: "claude-result",
     description:
-      "Get the latest turn status and result. contextTokens is the latest observed request's input tokens (including cached input), not post-turn fullness; null until observed. compactedThisTurn reports whether a compact boundary was observed in this turn.",
+      "Get the latest turn status and result. model is the latest observed serving model, not the requested family; null until observed. contextTokens is the latest observed request's input tokens (including cached input), not post-turn fullness; null until observed. compactedThisTurn reports whether a compact boundary was observed in this turn.",
     inputSchema: {
       type: "object",
       properties: {

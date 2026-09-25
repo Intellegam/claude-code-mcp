@@ -126,6 +126,15 @@ describe("child environment denylist", () => {
 describe("query options", () => {
   const base = { cwd: "/repo", parentEnv: PARENT_ENV };
 
+  test("model selection is passed unchanged and omitted by default", () => {
+    assert.equal(Object.hasOwn(buildQueryOptions(base), "model"), false);
+    for (const writable of [false, true]) {
+      for (const model of ["fable", "opus", "sonnet", "haiku"]) {
+        assert.equal(buildQueryOptions({ ...base, model, writable }).model, model);
+      }
+    }
+  });
+
   test("read-only mode removes every write and execute surface", () => {
     const options = buildQueryOptions(base);
     for (const tool of [

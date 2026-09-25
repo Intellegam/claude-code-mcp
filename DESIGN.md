@@ -10,7 +10,8 @@ what is not obvious from the code: the SDK mechanics the runner depends on, the
 order events are resolved in, and the trust model.
 
 Everything marked *verified* was established empirically against
-`@anthropic-ai/claude-agent-sdk@0.3.258` and its bundled CLI 2.1.x.
+`@anthropic-ai/claude-agent-sdk@0.3.280` and its bundled CLI 2.1.280, except
+where an older observation is explicitly named.
 
 The turn/session engine originated in codex-mcp. Each session directly retains
 its latest turn; that turn's status is the one-active-turn guard. A separate set
@@ -76,6 +77,22 @@ only once the turn has settled.
   cwd before spawning the CLI. After a server restart, the SDK adapter validates
   the requested cwd against persisted session metadata before it starts the
   resumed query.
+
+## Model selection
+
+Both submission tools accept an optional family alias (`fable`, `opus`, `sonnet`,
+`haiku`). The engine validates it before starting a runner or changing a session
+record; the adapter passes it unchanged as SDK `options.model`. When unset the
+option is absent, preserving the operator's normal defaults. The CLI owns alias
+resolution, including provider and configured model overrides.
+
+`requestedModel` is separate from the observed per-turn `model`. A session
+remembers its requested alias only after initialization succeeds, alongside its
+cwd; omitted replies inherit that alias. Observed fallback models never overwrite
+the selection. This memory is process-local: after a restart callers must pass
+`model` again to keep their choice. No model choice grants write permissions.
+Tier 2 verifies resolution, default precedence, selection across replies and
+restarts, and response-model reporting against the real bundled CLI.
 
 ## Context guardrail and session boundaries
 
@@ -194,8 +211,8 @@ the flag-settings layer, which merges over the operator's files key by key.
 
 `TaskCreate`, `TaskUpdate` and `TaskStop` mutate session state, so they are
 read-only exclusions; inspection tools (`ListAgents`, `TaskGet`, `TaskList`,
-`TaskOutput`) stay when offered. The default 0.3.258 surface includes
-`ListAgents` and `TaskOutput` but no longer includes `TaskGet` or `TaskList`.
+`TaskOutput`) stay when offered. The default 0.3.280 surface includes
+`ListAgents` but no longer includes `TaskGet`, `TaskList`, or `TaskOutput`.
 The tier-2 drift guard pins that surface so the next SDK bump has to be looked
 at.
 

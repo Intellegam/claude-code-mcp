@@ -97,6 +97,14 @@ async function scenario(name, fn) {
 const assert = (condition, message) => {
   if (!condition) throw new Error(message);
 };
+function assertResolvedModel(model) {
+  assert(
+    typeof model === "string" && model.length > 0 && model !== "opus",
+    `no resolved model reported: ${model}`,
+  );
+  process.stdout.write(`  resolved model: ${model}\n`);
+}
+
 const snapshot = (response) => JSON.parse(response.result.content[0].text);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -169,12 +177,14 @@ await mcp.request("initialize", {});
 
 let sessionId = null;
 
-await scenario("read-only consultation answers from the repo", async () => {
+await scenario("Opus consultation answers from the repo and reports its resolved model", async () => {
   const result = await runSession("claude", {
     prompt:
       "In one sentence: what does lib/claude-runner.js in this repo do? Name the file you read.",
     cwd: REPO_ROOT,
+    model: "opus",
   });
+  assertResolvedModel(result.model);
   const output = result.output;
   assert(/claude-runner\.js/.test(output), "answer does not cite the file");
   sessionId = result.sessionId;
@@ -187,6 +197,7 @@ await scenario("a follow-up remembers the conversation", async () => {
     prompt: "What file did I just ask you about? Answer with the file name only.",
     cwd: REPO_ROOT,
   });
+  assertResolvedModel(result.model);
   const output = result.output;
   assert(
     /claude-runner/.test(output),
