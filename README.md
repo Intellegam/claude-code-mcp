@@ -39,6 +39,8 @@ mcp_2026_07_28 = true
 CODEX_MCP_PROTOCOL_VERSION = "2026-07-28"
 ```
 
+This example applies to a standalone server definition, not a plugin override.
+The plugin-provided server needs the marker in its own MCP configuration.
 Keep the server's existing `command` and `args` configuration. The feature flag
 alone leaves stdio on the legacy path. An isolated, discovery-only probe on
 2026-11-11 verified four tools through `server/discover` and `tools/list` with
