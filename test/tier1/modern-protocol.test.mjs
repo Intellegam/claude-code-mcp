@@ -65,6 +65,48 @@ describe("MCP 2026-07-28", () => {
     assert.equal(legacy.result.resultType, undefined);
   });
 
+  test("optional modern metadata follows the envelope schema", async () => {
+    for (const [key, value] of [
+      ["io.modelcontextprotocol/clientInfo", null],
+      ["io.modelcontextprotocol/clientInfo", {}],
+      ["io.modelcontextprotocol/clientInfo", []],
+      ["io.modelcontextprotocol/clientInfo", {"name": "client"}],
+      ["io.modelcontextprotocol/clientInfo", {"name": 9, "version": "1"}],
+      ["io.modelcontextprotocol/clientInfo", {"name": "client", "version": "1", "title": null}],
+      ["io.modelcontextprotocol/clientInfo", {"name": "client", "version": "1", "icons": [{}]}],
+      ["io.modelcontextprotocol/clientInfo", {"name": "client", "version": "1", "icons": [{"src": "data:image/png;base64,", "sizes": [5]}]}],
+      ["io.modelcontextprotocol/clientInfo", {"name": "client", "version": "1", "icons": [{"src": "data:image/png;base64,", "theme": "unknown"}]}],
+      ["io.modelcontextprotocol/logLevel", "verbose"],
+      ["io.modelcontextprotocol/logLevel", null],
+      ["progressToken", {}],
+      ["io.modelcontextprotocol/clientCapabilities", {"sampling": null}],
+      ["io.modelcontextprotocol/clientCapabilities", {"sampling": {"tools": false}}],
+      ["io.modelcontextprotocol/clientCapabilities", {"elicitation": {"form": []}}],
+      ["io.modelcontextprotocol/clientCapabilities", {"extensions": {"vendor/example": null}}]
+    ]) {
+      const response = await server.request("tools/list", { _meta: { ...meta(), [key]: value } });
+      assert.equal(response.error.code, -32602);
+    }
+    for (const [key, value] of [
+      ["io.modelcontextprotocol/clientInfo", {"name": "client", "version": "1"}],
+      ["io.modelcontextprotocol/clientInfo", {"name": "client", "version": "1", "title": "Client", "description": "Probe", "websiteUrl": "https://example.com", "icons": [{"src": "https://example.com/icon.png", "mimeType": "image/png", "sizes": ["48x48"], "theme": "dark"}]}],
+      ["progressToken", 0],
+      ["progressToken", "trace"],
+      ["io.modelcontextprotocol/clientCapabilities", {"sampling": {"tools": {}}, "elicitation": {"form": {}}, "extensions": {"vendor/example": {}}, "custom": {"future": true}}],
+      ["io.modelcontextprotocol/logLevel", "debug"],
+      ["io.modelcontextprotocol/logLevel", "info"],
+      ["io.modelcontextprotocol/logLevel", "notice"],
+      ["io.modelcontextprotocol/logLevel", "warning"],
+      ["io.modelcontextprotocol/logLevel", "error"],
+      ["io.modelcontextprotocol/logLevel", "critical"],
+      ["io.modelcontextprotocol/logLevel", "alert"],
+      ["io.modelcontextprotocol/logLevel", "emergency"]
+    ]) {
+      const response = await server.request("tools/list", { _meta: { ...meta(), [key]: value } });
+      assert.equal(response.result.resultType, "complete");
+    }
+  });
+
   test("handshake-free tools keep the async session contract", async () => {
     const start = await server.request("tools/call", params({
       name: "claude", arguments: { prompt: "#work=100 modern", cwd: "/tmp" },
