@@ -107,6 +107,18 @@ describe("MCP 2026-07-28", () => {
     }
   });
 
+  test("modern numeric request IDs follow the integer schema without a safe-range limit", async () => {
+    for (const id of [0, -1, Number.MAX_SAFE_INTEGER + 1, 1e20]) {
+      const response = await server.requestWithId(id, "tools/list", params());
+      assert.equal(response.id, id);
+      assert.equal(response.result.resultType, "complete");
+    }
+    for (const id of [1.5, null, true]) {
+      const response = await server.requestWithId(id, "tools/list", params());
+      assert.equal(response.error.code, -32602);
+    }
+  });
+
   test("handshake-free tools keep the async session contract", async () => {
     const start = await server.request("tools/call", params({
       name: "claude", arguments: { prompt: "#work=100 modern", cwd: "/tmp" },
