@@ -304,7 +304,11 @@ async function handleLine(line) {
           break;
 
         case "ping":
-          sendResponse(id, {});
+          if (context.modern) {
+            sendError(id, -32601, "Method not found");
+          } else {
+            sendResponse(id, {});
+          }
           break;
 
         case "tools/list":

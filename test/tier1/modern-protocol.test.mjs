@@ -28,6 +28,15 @@ describe("MCP 2026-07-28", () => {
     assert.deepEqual(first.result, second.result);
   });
 
+  test("ping is rejected for modern requests and retained for legacy clients", async () => {
+    const modern = await server.request("ping", params());
+    assert.equal(modern.error.code, -32601);
+    assert.equal(modern.result, undefined);
+    await server.init();
+    assert.deepEqual((await server.request("ping", {})).result, {});
+    assert.equal((await server.request("ping", params())).error.code, -32601);
+  });
+
   test("version and capabilities are checked per request", async () => {
     for (const [metadata, code] of [
       [{}, -32602],
@@ -41,8 +50,19 @@ describe("MCP 2026-07-28", () => {
         supported: ["2026-07-28"], requested: "2099-01-01",
       });
     }
-    assert.equal((await server.request("ping", params())).result.resultType, "complete");
+    assert.equal((await server.request("tools/list", params())).result.resultType, "complete");
     assert.equal((await server.request("ping", {})).result.resultType, undefined);
+  });
+
+  test("modern-only metadata cannot bypass required envelope validation", async () => {
+    for (const key of ["clientInfo", "logLevel"]) {
+      const response = await server.request("tools/list", {
+        _meta: { ["io.modelcontextprotocol/" + key]: {} },
+      });
+      assert.equal(response.error.code, -32602);
+    }
+    const legacy = await server.request("tools/list", { _meta: { "vendor.example/trace": "legacy" } });
+    assert.equal(legacy.result.resultType, undefined);
   });
 
   test("handshake-free tools keep the async session contract", async () => {
@@ -82,7 +102,7 @@ describe("MCP 2026-07-28", () => {
     const init = await server.init();
     assert.equal(init.result.protocolVersion, "2024-11-05");
     assert.equal(init.result.resultType, undefined);
-    assert.equal((await server.request("ping", params())).result.resultType, "complete");
+    assert.equal((await server.request("tools/list", params())).result.resultType, "complete");
   });
 
   test("cancelled ids can be reused by non-tool requests in the same stdin chunk", async () => {
@@ -95,18 +115,19 @@ describe("MCP 2026-07-28", () => {
         server.send({ jsonrpc: "2.0", id, method: "tools/call", params: params({
           name: "claude", arguments: { prompt: "#init=1000 cancelled", cwd: "/tmp" },
         }) });
-        // A ping round trip ensures the delayed call has entered liveCalls.
-        await server.request("ping", params());
+        // A catalog round trip ensures the delayed call has entered liveCalls.
+        await server.request("tools/list", params());
         server.proc.stdin.write([
           { jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id } },
           { jsonrpc: "2.0", id, method, params: params() },
         ].map((message) => JSON.stringify(message)).join("\n") + "\n");
-        await server.request("ping", params());
+        await server.request("tools/list", params());
         await sleep(30);
         const replies = messages.join("").trim().split("\n")
           .map((line) => JSON.parse(line)).filter((message) => message.id === id);
         assert.equal(replies.length, 1, method + " should answer exactly once");
-        assert.equal(replies[0].result.resultType, "complete");
+        if (method === "ping") assert.equal(replies[0].error.code, -32601);
+        else assert.equal(replies[0].result.resultType, "complete");
       } finally {
         server.proc.stdout.off("data", collect);
       }
