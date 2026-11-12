@@ -14,6 +14,9 @@
  * `claude-cancel`.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
+import { LEGACY_VERSION, CATALOG_CACHE, requestProtocol, completeResult, discovery } from "./lib/mcp-protocol.js";
+
 import {
   createEngine,
   MODEL_FAMILIES,
@@ -23,7 +26,8 @@ import {
 import { createRunnerFactory, loadSdk } from "./lib/claude-runner.js";
 import { resolveAutoCompactWindow } from "./lib/isolation.js";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
+const requestContext = new AsyncLocalStorage();
 const TIMEOUT_MS = positiveInteger(
   process.env.CLAUDE_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
@@ -279,36 +283,51 @@ async function handleLine(line) {
   if (!hasId) return;
 
   try {
-    switch (method) {
-      case "initialize":
-        sendResponse(id, {
-          protocolVersion: "2024-11-05",
-          capabilities: { tools: {} },
-          serverInfo: { name: "claude-code-mcp", version: VERSION },
-          instructions: INSTRUCTIONS,
-        });
-        break;
+    const context = requestProtocol(message);
+    await requestContext.run(context, async () => {
+      switch (method) {
+        case "server/discover":
+          sendResponse(id, discovery(INSTRUCTIONS));
+          break;
 
-      case "ping":
-        sendResponse(id, {});
-        break;
+        case "initialize":
+          if (context.modern) {
+            sendError(id, -32601, "Use server/discover instead of initialize");
+            break;
+          }
+          sendResponse(id, {
+            protocolVersion: LEGACY_VERSION,
+            capabilities: { tools: {} },
+            serverInfo: { name: "claude-code-mcp", version: VERSION },
+            instructions: INSTRUCTIONS,
+          });
+          break;
 
-      case "tools/list":
-        sendResponse(id, { tools: TOOLS });
-        break;
+        case "ping":
+          if (context.modern) {
+            sendError(id, -32601, "Method not found");
+          } else {
+            sendResponse(id, {});
+          }
+          break;
 
-      case "tools/call":
-        await handleToolCall(id, message.params);
-        break;
+        case "tools/list":
+          sendResponse(id, { tools: TOOLS, ...(context.modern ? CATALOG_CACHE : {}) });
+          break;
 
-      default:
-        sendError(id, -32601, "Method not found");
-    }
+        case "tools/call":
+          await handleToolCall(id, message.params);
+          break;
+
+        default:
+          sendError(id, -32601, "Method not found");
+      }
+    });
   } catch (e) {
     // Not a tool failure (those answer with an isError result) — a fault in the
     // protocol layer itself.
-    console.error("Error processing message:", e);
-    sendError(id, -32603, e.message);
+    if (!e.code) console.error("Error processing message:", e);
+    sendError(id, e.code || -32603, e.message, undefined, e.data);
   }
 }
 
@@ -317,6 +336,8 @@ function handleNotification(method, params) {
   const call = liveCalls.get(params?.requestId);
   if (!call) return;
   call.cancelled = true;
+  // The id is reusable now; the old handler retains its own cancelled call.
+  liveCalls.delete(params.requestId);
   cancelTurn(call.turn);
 }
 
@@ -436,6 +457,7 @@ async function waitForInitialization(turn) {
  */
 function sendResponse(id, result, call = liveCalls.get(id)) {
   if (call?.cancelled) return; // cancelled requests get no reply
+  result = completeResult(result, requestContext.getStore(), { name: "claude-code-mcp", version: VERSION });
   console.log(JSON.stringify({ jsonrpc: "2.0", id, result }));
 }
 
@@ -455,10 +477,10 @@ function sendToolFailure(id, message, call) {
   );
 }
 
-function sendError(id, code, message, call = liveCalls.get(id)) {
+function sendError(id, code, message, call = liveCalls.get(id), data) {
   if (call?.cancelled) return;
   console.log(
-    JSON.stringify({ jsonrpc: "2.0", id: id ?? null, error: { code, message } }),
+    JSON.stringify({ jsonrpc: "2.0", id: id ?? null, error: { code, message, ...(data === undefined ? {} : { data }) } }),
   );
 }
 

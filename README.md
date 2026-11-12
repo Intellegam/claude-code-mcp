@@ -15,6 +15,46 @@ way; their public execution contracts are independent.
    with the operator's own configuration — the consulted agent sees what you
    would see.
 
+## MCP protocol compatibility
+
+The server supports [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning)
+over local stdio, alongside the existing `2024-11-05` initialization path.
+Modern clients use `server/discover` and per-request version/capability metadata;
+no MCP initialization handshake is needed. Discovery and the deterministic tool
+catalog carry five-minute public cache hints. Tool arguments, session handles,
+permissions and async behavior are the same on both paths.
+
+Stdio uses local server and agent processes; running turns and polling snapshots
+remain process-local. This protocol change provides no restart durability or
+measured resource savings.
+
+Codex support is opt-in. With Codex CLI 0.166.0, enable both the client
+feature and the per-server marker in `config.toml` after installing this release:
+
+```toml
+[features]
+mcp_2026_07_28 = true
+
+[mcp_servers.claude-agent.env]
+CODEX_MCP_PROTOCOL_VERSION = "2026-07-28"
+```
+
+This example applies to a standalone server definition, not a plugin override.
+The plugin-provided server needs the marker in its own MCP configuration.
+Keep the server's existing `command` and `args` configuration. The feature flag
+alone leaves stdio on the legacy path. An isolated, discovery-only probe on
+2026-11-11 verified four tools through `server/discover` and `tools/list` with
+both opt-ins; no Claude turn or model request was made. Existing clients without
+these opt-ins retain the legacy path.
+
+### Tasks
+
+The [Tasks extension](https://modelcontextprotocol.io/extensions/tasks/overview)
+is not advertised: this bridge retains its existing async tools. Native Tasks
+requires durable task creation and result retrieval across reconnects. Claude
+Code Tasks support is public beta on selected CLI/SDK surfaces, excluding
+desktop and VS Code.
+
 ## Prerequisites
 
 - Node.js 20.11 or higher
@@ -33,7 +73,7 @@ install.
 ```toml
 [mcp_servers.claude-agent]
 command = "npx"
-args = ["-y", "github:Intellegam/claude-code-mcp#v0.3.0"]
+args = ["-y", "github:Intellegam/claude-code-mcp#v0.4.0"]
 ```
 
 Or from a local checkout:
