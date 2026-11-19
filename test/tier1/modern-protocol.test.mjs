@@ -15,7 +15,7 @@ describe("MCP 2026-07-28", () => {
   test("discovery and catalog work without initialize", async () => {
     const { result } = await server.request("server/discover", params());
     assert.equal(result.resultType, "complete");
-    assert.deepEqual(result.supportedVersions, ["2026-07-28"]);
+    assert.deepEqual(result.supportedVersions, ["2026-07-28", "2024-11-05"]);
     assert.deepEqual(result.capabilities, { tools: {} });
     assert.equal(result._meta["io.modelcontextprotocol/serverInfo"].name, "claude-code-mcp");
     assert.match(result.instructions, /read-only/);
@@ -47,7 +47,7 @@ describe("MCP 2026-07-28", () => {
       const response = await server.request("server/discover", { _meta: metadata });
       assert.equal(response.error.code, code);
       if (code === -32022) assert.deepEqual(response.error.data, {
-        supported: ["2026-07-28"], requested: "2099-01-01",
+        supported: ["2026-07-28", "2024-11-05"], requested: "2099-01-01",
       });
     }
     assert.equal((await server.request("tools/list", params())).result.resultType, "complete");
@@ -107,16 +107,29 @@ describe("MCP 2026-07-28", () => {
     }
   });
 
-  test("modern numeric request IDs follow the integer schema without a safe-range limit", async () => {
-    for (const id of [0, -1, Number.MAX_SAFE_INTEGER + 1, 1e20]) {
+  test("modern request IDs preserve safe integers and unrestricted strings", async () => {
+    for (const id of [0, -1, Number.MAX_SAFE_INTEGER, -Number.MAX_SAFE_INTEGER, "9007199254740993"]) {
       const response = await server.requestWithId(id, "tools/list", params());
       assert.equal(response.id, id);
       assert.equal(response.result.resultType, "complete");
     }
-    for (const id of [1.5, null, true]) {
+    for (const id of [null, true]) {
       const response = await server.requestWithId(id, "tools/list", params());
       assert.equal(response.error.code, -32602);
     }
+  });
+
+  test("raw unsafe numeric IDs are rejected without echoing rounded values", async () => {
+    for (const rawId of ["9007199254740992", "9007199254740993", "-9007199254740993", "1e20", "1e309", "1.5"]) {
+      const line = JSON.stringify({ jsonrpc: "2.0", id: "RAW_ID", method: "tools/call",
+        params: params({ name: "claude", arguments: { prompt: "must not run", cwd: "/tmp" } }) });
+      const response = await server.requestRaw(line.replace('"RAW_ID"', rawId), null);
+      assert.equal(response.id, null);
+      assert.equal(response.error.code, -32600);
+    }
+    const response = await server.requestWithId("9007199254740993", "tools/list", params());
+    assert.equal(response.id, "9007199254740993");
+    assert.equal(response.result.resultType, "complete");
   });
 
   test("handshake-free tools keep the async session contract", async () => {

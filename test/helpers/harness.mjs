@@ -162,6 +162,12 @@ export function spawnServer({ env = {}, cwd = REPO_ROOT, useMockQuery = true } =
       return waitFor(id, timeoutMs);
     },
 
+    requestRaw(line, responseId, timeoutMs) {
+      const response = waitFor(responseId, timeoutMs);
+      proc.stdin.write(line + "\n");
+      return response;
+    },
+
     /**
      * Write several tool calls in a *single* stdin chunk, so the server's line
      * handler starts them all before any of them can await. That is what makes

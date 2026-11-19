@@ -327,7 +327,7 @@ async function handleLine(line) {
     // Not a tool failure (those answer with an isError result) — a fault in the
     // protocol layer itself.
     if (!e.code) console.error("Error processing message:", e);
-    sendError(id, e.code || -32603, e.message, undefined, e.data);
+    sendError(e.responseId === null ? null : id, e.code || -32603, e.message, undefined, e.data);
   }
 }
 
