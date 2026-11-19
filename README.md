@@ -76,7 +76,7 @@ install.
 ```toml
 [mcp_servers.claude-agent]
 command = "npx"
-args = ["-y", "github:Intellegam/claude-code-mcp#v0.4.0"]
+args = ["-y", "github:Intellegam/claude-code-mcp#v0.5.0"]
 ```
 
 Or from a local checkout:
@@ -109,13 +109,15 @@ claude({ prompt: "Fix the failing test in tests/test_auth.py", cwd: "/repo", wri
 
 Parameters: `prompt` (required), `cwd`, `model`, `writable` (default false).
 
-`model` accepts the family aliases `fable`, `opus`, `sonnet`, and `haiku`.
-Claude Code resolves them using its bundled runtime, provider, and configuration;
-the wrapper does not maintain model version mappings. Omit `model` to use the
-operator's normal default. Exact model IDs and other aliases are not accepted.
-The pinned SDK 0.3.280 bundles Claude Code 2.1.280, whose standard Anthropic
-`opus` alias resolves to Opus 5.5. Provider availability and configured alias
-overrides still apply; an old runtime does not automatically learn new releases.
+New sessions default to `opus`. Selection order is an explicit `model` argument,
+`CLAUDE_CODE_MCP_MODEL`, then the shipped `opus` default. Family aliases (`fable`,
+`opus`, `sonnet`, `haiku`) and exact model/provider IDs are passed to Claude Code.
+Set `model` or the environment variable to `inherit` to omit the SDK override and
+use the operator's normal settings/environment default.
+
+The pinned SDK 0.3.280 bundles Claude Code 2.1.280; its standard Anthropic `opus`
+alias resolves to Opus 5.5. An alias follows that runtime's provider mapping, not
+a guarantee of the newest available release. Unsupported selections fail upstream.
 
 ```js
 // Keep a planning conversation on Fable.
@@ -141,11 +143,12 @@ claude-reply({ sessionId: "e0dbaa09-…", prompt: "What about the timeout path?"
 
 Parameters: `sessionId` (required), `prompt` (required), `cwd`, `model`.
 
-An omitted `model` inherits the last selected family while the MCP server retains
-the session. An explicit family switches the resumed turn and subsequent replies;
+An omitted `model` inherits the last requested selection while the MCP server retains
+the session. An explicit model switches the resumed turn and subsequent replies;
 failed initialization does not replace the previous selection. After an MCP
 restart, pass `model` again to retain your choice: without it, the CLI uses its
-normal defaults. Selection does not change the session's write permissions.
+normal defaults. `inherit` is only accepted for new sessions. Selection does not
+change the session's write permissions.
 
 Resume is keyed by session id **and** cwd, so pass the same `cwd` the session was
 created with. While the server retains the session record, the engine rejects a
@@ -231,7 +234,7 @@ memory files, hooks, skills, plugins and MCP servers. The trade is a wider tool
 surface than a sealed sandbox, and the startup cost of your MCP servers on every
 turn — in exchange the consultation has the context and tooling you do.
 
-That includes the **model** when no family is selected: consultations use your `model` setting
+Model selection is explicit by default. With `model: "inherit"`, consultations use your `model` setting
 (`~/.claude/settings.json` or project settings) or an inherited
 `ANTHROPIC_MODEL` env var, else the CLI default — whatever an interactive
 client did or didn't persist there. The result snapshot's `model` field tells
@@ -288,6 +291,7 @@ through a settings file keeps working.
 
 | Environment variable                  | Default            | Description                                                         |
 | ------------------------------------- | ------------------ | ------------------------------------------------------------------- |
+| `CLAUDE_CODE_MCP_MODEL` | `opus` | New-session default family/model ID; `inherit` uses operator settings |
 | `CLAUDE_INIT_TIMEOUT_MS`              | `30000` (30s)      | Initialization wait; may be lowered, capped at 30s                   |
 | `CLAUDE_TIMEOUT_MS`                   | `1800000` (30 min) | Maximum time for one turn                                            |
 | `CLAUDE_CANCEL_WATCHDOG_MS`           | `30000` (30s)      | How long to wait after an interrupt before forcing                   |

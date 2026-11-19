@@ -47,8 +47,7 @@ describe("MCP protocol", () => {
     assert.deepEqual(claude.inputSchema.required, ["prompt"]);
     assert.ok(claude.inputSchema.properties.writable);
     for (const tool of response.result.tools.slice(0, 2)) {
-      assert.deepEqual(tool.inputSchema.properties.model.enum,
-        ["fable", "opus", "sonnet", "haiku"]);
+      assert.equal(tool.inputSchema.properties.model.type, "string");
       assert.ok(!tool.inputSchema.required.includes("model"));
     }
     assert.equal(claude.inputSchema.properties.async, undefined);
@@ -96,9 +95,9 @@ describe("MCP protocol", () => {
 
     for (const name of ["claude", "claude-reply"]) {
       const invalid = await server.call(name, {
-        prompt: "hello", sessionId: "invalid-model-session", model: "best",
+        prompt: "hello", sessionId: "invalid-model-session", model: " ",
       });
-      assert.match(toolError(invalid), /model must be one of/);
+      assert.match(toolError(invalid), /model must be a non-empty/);
     }
 
     const badPromptType = await server.call("claude", { prompt: 42 });

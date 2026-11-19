@@ -19,14 +19,13 @@ import { LEGACY_VERSION, CATALOG_CACHE, requestProtocol, completeResult, discove
 
 import {
   createEngine,
-  MODEL_FAMILIES,
   DEFAULT_CANCEL_WATCHDOG_MS,
   DEFAULT_TIMEOUT_MS,
 } from "./lib/engine.js";
 import { createRunnerFactory, loadSdk } from "./lib/claude-runner.js";
 import { resolveAutoCompactWindow } from "./lib/isolation.js";
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
 const requestContext = new AsyncLocalStorage();
 const TIMEOUT_MS = positiveInteger(
   process.env.CLAUDE_TIMEOUT_MS,
@@ -85,9 +84,9 @@ const INSTRUCTIONS = [
 
 const MODEL_SCHEMA = {
   type: "string",
-  enum: MODEL_FAMILIES,
+  minLength: 1,
   description:
-    "Model family, resolved by Claude Code using its runtime, provider, and configuration. On a new session, omission uses the operator default. Replies inherit the last selection while this server remembers it; pass model again after a server restart. The result's model reports the observed serving model.",
+    "Claude family alias or model ID. New sessions use CLAUDE_CODE_MCP_MODEL or opus; inherit uses local Claude Code configuration on new sessions only. Replies inherit the last selection while this server remembers it; pass model again after a server restart. The result's model reports the observed serving model.",
 };
 
 const TOOLS = [

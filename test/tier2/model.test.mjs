@@ -9,7 +9,7 @@ import { startTier2 } from "../helpers/fixtures.mjs";
 test("family selection reaches the API across fresh sessions, replies and restart", async () => {
   const ctx = await startTier2({
     env: { ANTHROPIC_MODEL: "sonnet", ANTHROPIC_DEFAULT_HAIKU_MODEL: "custom-haiku-model" },
-    turns: Array.from({ length: 12 }, () => ({ text: "done", model: "observed-serving-model" })),
+    turns: Array.from({ length: 20 }, () => ({ text: "done", model: "observed-serving-model" })),
   });
   try {
     // An explicit selection must beat both environment and project defaults.
@@ -21,7 +21,9 @@ test("family selection reaches the API across fresh sessions, replies and restar
       return { sessionId: result.sessionId, requested: ctx.mock.mainCalls().at(-1).model };
     };
     const implicit = await submit("claude", {});
-    assert.equal(implicit.requested, "claude-sonnet-5", "omission preserves environment default");
+    assert.equal(implicit.requested, "claude-opus-5-5", "shipped default beats ambient operator settings");
+    assert.equal((await submit("claude", { model: "inherit" })).requested, "claude-sonnet-5");
+    assert.equal((await submit("claude", { model: "custom-provider-model" })).requested, "custom-provider-model");
     const first = await submit("claude", { model: "opus" });
     assert.equal(first.requested, "claude-opus-5-5");
     const resumed = await submit("claude-reply", { sessionId: first.sessionId });
@@ -39,4 +41,17 @@ test("family selection reaches the API across fresh sessions, replies and restar
   } finally {
     await ctx.stop();
   }
+});
+
+test("server-level model beats ambient settings while per-call selection wins", async () => {
+  const ctx = await startTier2({
+    env: { CLAUDE_CODE_MCP_MODEL: "haiku", ANTHROPIC_MODEL: "sonnet" },
+    turns: Array.from({ length: 3 }, () => ({ text: "done" })),
+  });
+  try {
+    for (const [model, expected] of [[undefined, "claude-haiku-4-5-20251001"], ["opus", "claude-opus-5-5"], ["inherit", "claude-sonnet-5"]]) {
+      await runSession(ctx.server, "claude", { cwd: ctx.sandbox.repo, prompt: "Say done.", model });
+      assert.equal(ctx.mock.mainCalls().at(-1).model, expected);
+    }
+  } finally { await ctx.stop(); }
 });

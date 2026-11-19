@@ -80,15 +80,15 @@ only once the turn has settled.
 
 ## Model selection
 
-Both submission tools accept an optional family alias (`fable`, `opus`, `sonnet`,
-`haiku`). The engine validates it before starting a runner or changing a session
-record; the adapter passes it unchanged as SDK `options.model`. When unset the
-option is absent, preserving the operator's normal defaults. The CLI owns alias
-resolution, including provider and configured model overrides.
+Both submission tools accept a non-empty family alias or exact model/provider ID.
+See [the Claude tool documentation](./README.md#claude--start-a-new-session) for precedence and the new-session `inherit` option.
+The engine validates selection before starting a runner or changing a session
+record; the adapter passes it unchanged as SDK `options.model`. Claude Code owns
+provider/alias resolution. Replies do not reapply new-session defaults.
 
 `requestedModel` is separate from the observed per-turn `model`. A session
-remembers its requested alias only after initialization succeeds, alongside its
-cwd; omitted replies inherit that alias. Observed fallback models never overwrite
+remembers its requested selection only after initialization succeeds, alongside its
+cwd; omitted replies inherit that selection. Observed fallback models never overwrite
 the selection. This memory is process-local: after a restart callers must pass
 `model` again to keep their choice. No model choice grants write permissions.
 Tier 2 verifies resolution, default precedence, selection across replies and
