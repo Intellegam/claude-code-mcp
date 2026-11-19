@@ -558,16 +558,29 @@ test("passive diagnostics keep the latest input, freeze on settlement, and reset
 });
 
 describe("model family selection", () => {
-  test("each family passes through; omission leaves the operator default alone", async () => {
-    for (const model of [undefined, "fable", "opus", "sonnet", "haiku"]) {
+  test("families and exact IDs pass through; omission selects the shipped default", async () => {
+    for (const model of [undefined, "fable", "opus", "sonnet", "haiku", "claude-opus-5-5", "inherit"]) {
       const createRunner = fakeRunners((runner) => {
         runner.init("s-model");
         runner.result();
       });
-      const engine = createEngine({ createRunner });
+      const engine = createEngine({ createRunner, defaultModel: "opus" });
       await submitStart(engine, { prompt: "hello", model });
-      assert.equal(createRunner.created[0].options.model, model);
+      assert.equal(createRunner.created[0].options.model, model === "inherit" ? undefined : model ?? "opus");
       assert.equal(engine.result({ sessionId: "s-model" }).model, null);
+    }
+  });
+
+  test("server defaults, per-call overrides and inherit apply only to new sessions", async () => {
+    for (const [defaultModel, requested, expected] of [
+      ["sonnet", undefined, "sonnet"], ["sonnet", "haiku", "haiku"],
+      ["sonnet", "inherit", undefined], ["inherit", undefined, undefined],
+    ]) {
+      const createRunner = fakeRunners((runner) => { runner.init("s-model"); runner.result(); });
+      const engine = createEngine({ createRunner, defaultModel });
+      await submitStart(engine, { prompt: "hello", model: requested });
+      await submitReply(engine, { sessionId: "s-model", prompt: "continue" });
+      assert.deepEqual(createRunner.created.map((r) => r.options.model), [expected, expected]);
     }
   });
 
@@ -595,13 +608,15 @@ describe("model family selection", () => {
     const engine = createEngine({ createRunner });
     await submitStart(engine, { prompt: "hello", model: "opus" });
     const original = engine.result({ sessionId: "s-model" });
-    for (const model of [null, "", "Opus", "opusplan", "best", "claude-opus-5-5", 42, {}, ["opus"]]) {
+    for (const model of [null, "", " ", " opus", "opus\n", 42, {}, ["opus"]]) {
       for (const submit of [submitStart, submitReply]) {
         const turn = await submit(engine, { sessionId: "s-model", prompt: "hello", model });
         assert.equal(turn.status, "failed");
-        assert.match(turn.error.message, /model must be one of/);
+        assert.match(turn.error.message, /model must be a non-empty/);
       }
     }
+    const inherited = await submitReply(engine, { sessionId: "s-model", prompt: "inherit", model: "inherit" });
+    assert.equal(inherited.status, "failed");
     assert.equal(createRunner.created.length, 1);
     assert.deepEqual(engine.result({ sessionId: "s-model" }), original);
   });

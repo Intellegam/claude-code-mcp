@@ -41,6 +41,7 @@ export function spawnServer({ env = {}, cwd = REPO_ROOT, useMockQuery = true } =
     cwd,
     env: {
       ...process.env,
+      CLAUDE_CODE_MCP_MODEL: "",
       ...(useMockQuery ? { CLAUDE_CODE_MCP_QUERY_MODULE: MOCK_QUERY } : {}),
       CLAUDE_TIMEOUT_MS: "8000",
       CLAUDE_CANCEL_WATCHDOG_MS: "1000",
